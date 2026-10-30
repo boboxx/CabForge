@@ -1,0 +1,27 @@
+# CabForge
+Options -Indexes
+DirectoryIndex index.php index.html
+
+# The site root routes unknown URLs to its own index.php; keep that out of
+# CabForge so missing files are real 404s.
+<IfModule mod_rewrite.c>
+    RewriteEngine Off
+</IfModule>
+
+# Project notes are not for the web.
+<FilesMatch "\.(md)$">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_mime.c>
+    AddType text/javascript .js
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "same-origin"
+    # Revalidate scripts and styles on every load so updates show up at once.
+    <FilesMatch "\.(js|css)$">
+        Header set Cache-Control "no-cache"
+    </FilesMatch>
+</IfModule>
