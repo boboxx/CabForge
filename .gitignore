@@ -1,0 +1,20 @@
+# Local operating-system files
+.DS_Store
+._*
+
+# Saved projects and local shop settings
+/data/*
+!/data/.htaccess
+
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+.htpasswd
+*.pem
+*.key
+
+# Local tooling
+/.codex/
+/.agents/
+/.aws/
