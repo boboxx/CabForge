@@ -3,6 +3,28 @@
 Parametric 32mm (frameless / Euro) cabinet design in the browser. Plain PHP and JavaScript,
 no external libraries, no build step.
 
+## Screenshots
+
+### Kitchen design in 3D
+
+![Kitchen with shaker cabinets, appliances, and an island](docs/screenshots/kitchen-3d.png)
+
+### Cabinet layout in 3D
+
+![Cabinet run with base cabinets, wall cabinets, and a countertop](docs/screenshots/cabinet-3d.png)
+
+### Part drawings
+
+![Dimensioned cabinet side drawing with drawer-slide drilling positions](docs/screenshots/part-drawing.png)
+
+### Sheet nesting
+
+![Panel-saw nesting layout with part labels and sheet utilization](docs/screenshots/nesting.png)
+
+### Materials and costs
+
+![Materials report with sheet goods, edge banding, hardware, and cost totals](docs/screenshots/materials.png)
+
 ## How it fits together
 
 | Path | What it is |
