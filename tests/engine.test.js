@@ -23,6 +23,10 @@ import {
   stackFronts,
   thickness,
   unitFrontHeight,
+  usStandardSizes,
+  applyHingeBrand,
+  frameThickness,
+  newBlindCorner,
 } from '../assets/js/engine/model.js';
 import { bandGroup, boxIntersection, boxMax, bores, cutSize, isDrawerBox, isPlinth, partSolids } from '../assets/js/engine/part.js';
 import { nestGroup, nestItems, nestJob } from '../assets/js/engine/nest.js';
@@ -33,7 +37,10 @@ import { cornerDoors, newCorner } from '../assets/js/engine/corner.js';
 import { addIsland, addWall, ensureRoom, locations } from '../assets/js/engine/room.js';
 import { cncGroups, cncNesting, gcode, notchedOutline, onStock, sheetProgram, stockOutline, stockRect, tablePart } from '../assets/js/engine/cnc.js';
 import { solidcraftDesign } from '../assets/js/engine/solidcraft.js';
+import { MM_PER_IN, fmtLen, fmtLenU, fmtSize, formatInches, parseLen, setUnits } from '../assets/js/engine/units.js';
 import { supplies, suppliesCsv } from '../assets/js/engine/supplies.js';
+import { faceFrames, refitFronts } from '../assets/js/engine/project.js';
+import { solidCutList } from '../assets/js/engine/cutlist.js';
 import { addCabinet, baseSource, buildAll, emptyProject, insertCabinet, jobFor, maxBoardLength, moveCabinet, newProject, placeAfter, placedParts, splitBoards, placedAfter, projectCutList, relayout, resizeCabinet, runNeighbours } from '../assets/js/engine/project.js';
 
 const tests = [];
@@ -2152,6 +2159,338 @@ test('older saves get a door panel material', () => {
   ensurePanelMaterial(c);
   assertEq(c.materials.panel, m.id);
   assertEq(c.library.length, JSON.parse(before).library.length, 'nothing more added');
+});
+
+// ---- units -----------------------------------------------------------------
+
+/** Runs fn with the given display units, then goes back to mm. */
+function withUnits(u, fn) {
+  setUnits(u);
+  try {
+    fn();
+  } finally {
+    setUnits({ system: 'mm' });
+  }
+}
+
+test('units: mm display is unchanged', () => {
+  assertEq(fmtLen(600), '600');
+  assertEq(fmtLen(1.5), '1.5');
+  assertEq(fmtLenU(19), '19 mm');
+});
+
+test('units: inch fractions at each precision', () => {
+  assertEq(formatInches(23.625, 32), '23 5/8"');
+  assertEq(formatInches(23.6, 8), '23 5/8"');
+  assertEq(formatInches(0.75, 16), '3/4"');
+  assertEq(formatInches(24, 16), '24"');
+  assertEq(formatInches(23.622, 32), '23 5/8"');
+  assertEq(formatInches(23.6875, 16), '23 11/16"');
+  assertEq(formatInches(23.6875, 8), '23 3/4"');
+  assertEq(formatInches(23.625, 0), '23.625"');
+  assertEq(formatInches(-1.5, 16), '-1 1/2"');
+});
+
+test('units: feet and inches above 36"', () => {
+  assertEq(formatInches(36, 16), '36"');
+  assertEq(formatInches(48, 16), `4' 0"`);
+  assertEq(formatInches(48.5, 16), `4' 1/2"`);
+  assertEq(formatInches(54.25, 16), `4' 6 1/4"`);
+  // Rounding up to the next foot carries over.
+  assertEq(formatInches(47.999, 16), `4' 0"`);
+  assertEq(formatInches(48, 16, { feet: false }), '48"');
+});
+
+test('units: a tiny length never shows as 0"', () => {
+  assertEq(formatInches(0.3 / MM_PER_IN, 32), '0.0118"');
+  assertEq(formatInches(0, 32), '0"');
+});
+
+test('units: fmtLen and fmtSize follow the setting', () => {
+  withUnits({ system: 'in', precision: 16 }, () => {
+    assertEq(fmtLen(600), '23 5/8"');
+    assertEq(fmtLenU(600), '23 5/8"');
+    assertEq(fmtLen(3657.6), `12' 0"`);
+    assertEq(fmtSize(2438.4, 609.6), `8' 0" × 24"`);
+  });
+});
+
+test('units: parseLen reads inches, fractions, feet and metric', () => {
+  const inch = (s) => parseLen(s, 'in') / MM_PER_IN;
+  assertApprox(inch('23.5'), 23.5);
+  assertApprox(inch('23 1/2'), 23.5);
+  assertApprox(inch('23-1/2"'), 23.5);
+  assertApprox(inch('3/4'), 0.75);
+  assertApprox(inch('.5'), 0.5);
+  assertApprox(inch('23 1/2 in'), 23.5);
+  assertApprox(inch('23″'), 23);
+  assertApprox(inch("4'"), 48);
+  assertApprox(inch(`4' 6"`), 54);
+  assertApprox(inch(`4'-6 1/2"`), 54.5);
+  assertApprox(inch("4'6"), 54);
+  assertApprox(inch('4ft 6in'), 54);
+  assertApprox(inch('1,200mm'), 1200 / MM_PER_IN);
+  assertApprox(inch('-1/2'), -0.5);
+  assertApprox(parseLen('600mm', 'in'), 600);
+  assertApprox(parseLen('60 cm', 'in'), 600);
+  assertApprox(parseLen('1.2m', 'in'), 1200);
+  assertApprox(parseLen('600', 'mm'), 600);
+  assertApprox(parseLen('24"', 'mm'), 609.6);
+  for (const bad of ['', 'abc', '1/0', '23 1/', '4\' x', '--1']) assert(Number.isNaN(parseLen(bad, 'in')), `"${bad}" is not a length`);
+});
+
+test('units: what is shown reads back as the same value', () => {
+  withUnits({ system: 'in', precision: 32 }, () => {
+    for (const inches of [0.75, 23.625, 34.5, 48, 96.03125, 144]) {
+      assertApprox(parseLen(fmtLen(inches * MM_PER_IN)), inches * MM_PER_IN);
+    }
+  });
+});
+
+test('units: US standard sizes build a 24" base cabinet with one door', () => {
+  const c = usStandardSizes(defaultConstruction());
+  const spec = newCabinet('base', 1, c);
+  assertApprox(spec.width, 609.6);
+  assertApprox(spec.height, 34.5 * MM_PER_IN);
+  const cab = buildCabinet(spec, c);
+  assertEq(cab.parts.filter((p) => p.role === 'door').length, 1, 'single door');
+  const lib = JSON.stringify(defaultConstruction().library);
+  assertEq(JSON.stringify(c.library), lib, 'materials untouched');
+});
+
+test('units: G-code in inches writes G20, inch coordinates and in/min feeds', () => {
+  const cfg = defaultConstruction().cnc;
+  const program = { minutes: 1, moves: [{ g: 1, x: 25.4, y: 50.8, z: -3.175, f: 2540 }, { g: 2, x: 0, y: 0, z: -3.175, i: 12.7, j: 0, f: 2540 }] };
+  const mm = gcode(program, cfg, [], { units: 'mm' });
+  assert(mm.includes('G21 G90'), 'mm program is G21');
+  assert(mm.includes('X25.4 Y50.8 Z-3.175 F2540'), mm);
+  const inch = gcode(program, cfg, [], { units: 'in' });
+  assert(inch.includes('G20 G90') && !inch.includes('G21'), 'inch program is G20');
+  assert(inch.includes('G1 X1 Y2 Z-0.125 F100'), inch);
+  assert(inch.includes('I0.5 J0'), inch);
+  assert(inch.includes('(Stock 49 x 49 in'), inch);
+});
+
+test('units: cut list CSV in inches has decimal inches and unit headers', () => {
+  const p = newProject();
+  const list = projectCutList(p);
+  const [head, row] = cutListCsv(list, { units: 'in' }).split('\n');
+  assert(head.includes('Thickness (mm),Length (in),Width (in)'), head);
+  const r = list.rows[0];
+  const cols = row.split(',');
+  assertApprox(Number(cols[4]), Math.round((r.length / MM_PER_IN) * 1000) / 1000);
+  assert(cutListCsv(list).startsWith('Qty,Part,Material,Thickness,Length,'), 'mm CSV unchanged');
+});
+
+
+// ---- cabinet styles ----------------------------------------------------------
+
+const styled = (style, fn) => {
+  const c = defaultConstruction();
+  c.cabinetStyle = style;
+  fn?.(c);
+  return c;
+};
+const parts = (cab, role) => cab.parts.filter((p) => p.role === role);
+
+test('frameless inset: fronts inside the case, flush with its front', () => {
+  const c = styled('framelessInset');
+  const spec = newCabinet('base', 1, c);
+  const cab = buildCabinet(spec, c);
+  const t = caseT(c);
+  const ft = thickness(c, 'front');
+  const door = part(cab, 'door');
+  assertApprox(door.bbox.min[0], t + c.insetGap, 'door left');
+  assertApprox(door.width, spec.width - 2 * t - 2 * c.insetGap, 'door width');
+  assertApprox(door.bbox.min[2] + ft, spec.depth, 'face flush with the case front');
+  assertApprox(door.bbox.min[1], c.toeKickHeight + t + c.insetGap, 'above the bottom');
+  // Shelves stop behind the door; the hinge plate line moves back by the door.
+  const shelf = part(cab, 'shelf');
+  assert(shelf.bbox.min[2] + shelf.bbox.size[2] <= spec.depth - ft + 1e-6, 'shelf behind the door');
+  const plates = bores(part(cab, 'leftSide')).filter((b) => b.purpose === 'hingePlate');
+  assert(plates.length && plates.every((b) => approx(b.y, c.system.frontSetback + ft)), 'plate line 37 + door');
+  assertEq(door.hinge.name, c.styleHinges.framelessInset.name);
+  assertApprox(bores(door)[0].y, c.styleHinges.framelessInset.k + 17.5, 'cup from the hinge edge');
+});
+
+test('frameless inset drawers: box and slides behind the front', () => {
+  const c = styled('framelessInset');
+  const spec = drawerBase(1, 3, c);
+  const cab = buildCabinet(spec, c);
+  const ft = thickness(c, 'front');
+  const sub = part(cab, 'drawerSubFront');
+  assertApprox(sub.bbox.min[2] + sub.bbox.size[2], spec.depth - ft, 'box front at the back of the front');
+  const slide = bores(part(cab, 'leftSide')).filter((b) => b.purpose === 'slide');
+  assertApprox(Math.min(...slide.map((b) => b.y)), c.slide.holes[c.slide.length][0] + ft, 'slide holes back by the front');
+});
+
+test('face frame inset: rails, raised bottom, fronts in the openings', () => {
+  const c = styled('faceFrameInset');
+  const spec = newCabinet('base', 1, c);
+  const cab = buildCabinet(spec, c);
+  const t = caseT(c);
+  const ff = c.faceFrame;
+  const y0 = c.toeKickHeight;
+  const rails = parts(cab, 'frameRail');
+  assertEq(rails.map((r) => r.name), ['Top rail', 'Bottom rail']);
+  assert(rails.every((r) => r.solid && r.materialId === undefined && approx(r.length, spec.width - 2 * t)), 'rails between the stiles');
+  const bottom = part(cab, 'bottom');
+  assertApprox(bottom.bbox.min[1] + t, y0 + ff.bottomRail, 'bottom flush with the bottom rail');
+  const door = part(cab, 'door');
+  assertApprox(door.bbox.min[1], y0 + ff.bottomRail + c.insetGap, 'door in the opening');
+  assertApprox(door.length, spec.height - y0 - ff.bottomRail - ff.topRail - 2 * c.insetGap);
+  assertApprox(door.bbox.min[2] + door.thickness, spec.depth + frameThickness(c), 'flush with the frame face');
+  // The case's front edges are behind the frame: not banded.
+  assert(!part(cab, 'leftSide').edges.l1 && !bottom.edges.l1 && !part(cab, 'frontStretcher').edges.l1, 'no banding behind the frame');
+  assert(part(cab, 'shelf').edges.l1, 'shelves still banded');
+  // No bores in the case for face-frame hinges.
+  assert(!bores(part(cab, 'leftSide')).some((b) => b.purpose === 'hingePlate'), 'plates go on the frame');
+});
+
+test('face frame overlay: fronts lap the frame, half a rail between drawers', () => {
+  const c = styled('faceFrameOverlay');
+  const spec = drawerBase(1, 3, c);
+  const cab = buildCabinet(spec, c);
+  const t = caseT(c);
+  const fronts = parts(cab, 'drawerFront').sort((a, b) => b.bbox.min[1] - a.bbox.min[1]);
+  assertEq(parts(cab, 'frameRail').length, 4, 'top, two middle, bottom');
+  assertApprox(fronts[0].bbox.min[0], t - c.frameOverlay, 'laps the stile');
+  const gap = fronts[0].bbox.min[1] - (fronts[1].bbox.min[1] + fronts[1].width);
+  assertApprox(gap, c.reveals.gap, 'the gap between them');
+  assertApprox(fronts[0].bbox.min[2], spec.depth + frameThickness(c), 'on the frame face');
+  // Drawer boxes reach through the opening, above the rail under them.
+  const mids = parts(cab, 'frameRail').filter((r) => r.name === 'Middle rail');
+  const boxes = parts(cab, 'drawerSide');
+  for (const r of mids) assert(!boxes.some((b) => b.bbox.min[1] < r.bbox.min[1] + r.width && b.bbox.min[1] + b.bbox.size[1] > r.bbox.min[1] && b.bbox.min[2] + b.bbox.size[2] > spec.depth), 'boxes clear the rails');
+});
+
+test('face frames along a run: shared stiles, fillers in them, scribe at the wall', () => {
+  const c = styled('faceFrameInset');
+  const p = emptyProject(c);
+  const a = newCabinet('base', 0, c);
+  const b = newCabinet('base', 0, c);
+  addCabinet(p, a);
+  addCabinet(p, newFiller('base', 0, c, 40));
+  addCabinet(p, b);
+  const t = caseT(c);
+  const sc = c.faceFrame.scribe;
+  assertApprox(a.x, sc, 'room for the scribe');
+  const built = buildAll(p);
+  const frames = faceFrames(p, built);
+  assertEq(frames.length, 1, 'one frame');
+  assertEq(frames[0].stiles.map((st) => Math.round(st.x1 - st.x0)), [Math.round(t + sc), Math.round(2 * t + 40), Math.round(t + sc)]);
+  assertEq(parts(built[0].cabinet, 'frameStile').length, 2, 'the first owns the shared stile');
+  assert(!built[1].cabinet.parts.some((q) => q.role === 'filler'), 'no filler strip');
+  // A break splits it; each side gets its own end stile, no scribe between.
+  a.frameBreak = true;
+  const split = faceFrames(p, buildAll(p));
+  assertEq(split.length, 2);
+  assertEq(split.map((f) => f.stiles.map((st) => Math.round(st.x1 - st.x0))), [[Math.round(t + sc), Math.round(t + 40)], [Math.round(t), Math.round(t + sc)]]);
+  delete a.frameBreak;
+  p.construction.faceFrame.continuous = false;
+  assertEq(faceFrames(p, buildAll(p)).length, 2, 'a frame per cabinet');
+});
+
+test('face frames break at spaces and height changes', () => {
+  const c = styled('faceFrameOverlay');
+  const p = emptyProject(c);
+  addCabinet(p, newCabinet('base', 0, c));
+  addCabinet(p, newSpace('dishwasher', 0, c));
+  addCabinet(p, newCabinet('base', 0, c));
+  addCabinet(p, newCabinet('tall', 0, c));
+  const frames = faceFrames(p, buildAll(p));
+  assertEq(frames.map((f) => f.cabinets.length), [1, 1, 1]);
+  const t = caseT(c);
+  // Beside the dishwasher and the tall: plain end stiles, no scribe.
+  assertApprox(frames[0].stiles[1].x1 - frames[0].stiles[1].x0, t);
+  assertApprox(frames[1].stiles[0].x1 - frames[1].stiles[0].x0, t);
+});
+
+test('face frame joints: tenons on rails, joints on stiles, solid cut list', () => {
+  const c = styled('faceFrameInset', (c) => (c.faceFrame.joinery = 'mortise'));
+  const p = emptyProject(c);
+  addCabinet(p, newCabinet('base', 0, c));
+  const built = buildAll(p);
+  const cab = built[0].cabinet;
+  const t = caseT(c);
+  const rail = part(cab, 'frameRail');
+  assertApprox(rail.length, 600 - 2 * t + 2 * c.faceFrame.tenon, 'rail with its tenons');
+  const stile = part(cab, 'frameStile');
+  assertEq(stile.joints.length, 2, 'top and bottom rails meet it');
+  const list = projectCutList(p, built);
+  assert(!list.rows.some((r) => /rail|Stile/.test(r.name)), 'not in the sheet cut list');
+  assert(list.solid.some((r) => r.name === 'Stile' && r.qty === 2), 'stiles in the solid cut list');
+  assert(list.solid.every((r) => r.joinery.startsWith('Mortise')), 'joinery listed');
+  const wood = list.woods[0];
+  const bf = list.solid.reduce((n, r) => n + r.qty * (r.length / 25.4) * (r.width / 25.4) * (4 / 4) / 144, 0) * 1.2;
+  assertApprox(wood.boardFeet, bf, 'board feet with 20% waste');
+  assert(cutListCsv(list).includes('Face frame part'), 'CSV section');
+  // Priced on the Materials report.
+  p.construction.woods[0].cost = 10;
+  const s = supplies(buildAll(p).map((b) => b.cabinet), p.construction, new Map(), []);
+  assertApprox(s.woods[0].cost, s.woods[0].boardFeet * 10);
+  assert(suppliesCsv(s).includes('bd ft'));
+  assert(paintNeeded([cab], p.construction).groups.some((g) => g.id === 'frames'), 'frames are painted');
+});
+
+test('blind corners: at the end of the wall, the next wall starts in front', () => {
+  for (const style of ['frameless', 'faceFrameInset']) {
+    const c = styled(style);
+    const p = emptyProject(c);
+    addWall(p);
+    p.room.walls[1].turn = 'inside';
+    const [w1, w2] = locations(p);
+    const blind = newBlindCorner('base', 0, c);
+    blind.at = w1.id;
+    addCabinet(p, blind);
+    const next = newCabinet('base', 0, c);
+    next.at = w2.id;
+    addCabinet(p, next);
+    relayout(p);
+    assertApprox(blind.x, w1.length - blind.width, `${style}: at the end of the wall`);
+    const projection = style === 'frameless' ? thickness(c, 'front') : frameThickness(c);
+    const scribe = style === 'frameless' ? 0 : c.faceFrame.scribe;
+    assertApprox(next.x, blind.depth + projection + scribe, `${style}: next wall starts in front of it`);
+    const cab = buildAll(p)[0].cabinet;
+    const door = part(cab, 'door');
+    assert(door.bbox.min[0] + door.width <= blind.width - blind.blind.width, `${style}: door clear of the blind part`);
+    if (style === 'frameless') assert(cab.parts.some((q) => q.name === 'Blind panel'), 'blind panel');
+    else assert(parts(cab, 'frameStile').some((st) => approx(st.width, blind.blind.width)), 'wide blind stile');
+  }
+});
+
+test('refitFronts: a style change refits drawer stacks and back', () => {
+  const c = defaultConstruction();
+  const p = emptyProject(c);
+  addCabinet(p, drawerBase(0, 3, c));
+  const units = () => p.cabinets[0].fronts.sections.map((s) => s.units);
+  const start = units();
+  const before = structuredClone(p.construction);
+  p.construction.cabinetStyle = 'faceFrameInset';
+  refitFronts(p, before);
+  assert(buildAll(p)[0].cabinet, 'builds after the change');
+  assertEq(units().reduce((a, b) => a + b), frontUnits(p.construction, p.cabinets[0]), 'fills the cabinet');
+  const back = structuredClone(p.construction);
+  p.construction.cabinetStyle = 'frameless';
+  refitFronts(p, back);
+  assertEq(units(), start, 'round trip');
+});
+
+test('style hinges: maker presets, butt hinges and prices', () => {
+  const c = styled('faceFrameInset');
+  c.styleHinges.faceFrameInset.type = 'butt';
+  c.styleHinges.faceFrameInset.buttCost = 4;
+  applyHingeBrand(c, 'salice');
+  assertApprox(c.styleHinges.faceFrameOverlay.k, 2.5, 'Salice face-frame overlay K');
+  assertEq(c.styleHinges.faceFrameInset.type, 'butt', 'hinge type kept');
+  const cab = buildCabinet(newCabinet('base', 1, c), c);
+  const door = part(cab, 'door');
+  assertEq(bores(door).length, 0, 'nothing bored for butt hinges');
+  assertEq(door.hingeMarks.length, hingeCount(door.length));
+  const s = supplies([cab], c, new Map(), []);
+  const row = s.hardware.find((r) => r.item === 'Hinge');
+  assertEq([row.qty, row.unitCost], [door.hingeMarks.length, 4]);
+  assert(!s.hardware.some((r) => r.item === 'Hinge mounting plate'), 'no plates');
 });
 
 // Runner

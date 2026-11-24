@@ -2,11 +2,13 @@
 // Case sides get a shop drawing instead: standing up, inside face, every
 // hole dimensioned from the bottom and front edges.
 
-import { effectiveConstruction, fmtMm } from '../engine/model.js';
+import { effectiveConstruction, fmtMm, partStock } from '../engine/model.js';
+import { jointLabel } from '../engine/cutlist.js';
 import { bores, edgeCode } from '../engine/part.js';
 import { jobFor } from '../engine/project.js';
 import { h, mount, s } from './dom.js';
 import { setState, state } from './store.js';
+import { fmtLen, fmtLenU, fmtSize, isImperial } from '../engine/units.js';
 
 const PURPOSE_LABELS = { system: 'System hole', hingeCup: 'Hinge cup', hingePlate: 'Hinge plate', slide: 'Drawer slide' };
 const isSide = (part) => part.role === 'leftSide' || part.role === 'rightSide';
@@ -75,8 +77,58 @@ function outlineDimensions(outline, font) {
     // The part lies to the left of each edge of a counter-clockwise outline.
     const inward = ccw ? [-(b[1] - a[1]) / len, (b[0] - a[0]) / len] : [(b[1] - a[1]) / len, -(b[0] - a[0]) / len];
     const [mx, my] = [(a[0] + b[0]) / 2 + inward[0] * font * 1.4, (a[1] + b[1]) / 2 + inward[1] * font * 1.4];
-    return s('text', { class: 'dw-muted', x: mx, y: my, 'font-size': font * 0.85, 'text-anchor': 'middle', 'dominant-baseline': 'middle' }, fmtMm(len));
+    return s('text', { class: 'dw-muted', x: mx, y: my, 'font-size': font * 0.85, 'text-anchor': 'middle', 'dominant-baseline': 'middle' }, fmtLen(len));
   });
+}
+
+/**
+ * Joinery and hand-fitted hardware drawn on a part: butt hinge mortises on
+ * a door's hinge edge; where rails meet a face frame stile (mortises
+ * dashed, dowel holes as dots); a rail's tenons (shoulders dashed), dowels
+ * or pocket holes (on the back, near each end).
+ */
+function jointShapes(part, font) {
+  const [l, w] = [part.length, part.width];
+  const out = [];
+  const label = (x, y, t) => s('text', { class: 'dw-muted', x, y, 'font-size': font * 0.8, 'text-anchor': 'middle' }, t);
+  for (const m of part.hingeMarks ?? []) {
+    const depth = font * 0.7;
+    const y0 = m.edge === 'right' ? w - depth : 0;
+    out.push(s('rect', { class: 'dw-pocket', x: m.x - m.length / 2, y: y0, width: m.length, height: depth }), label(m.x, m.edge === 'right' ? w - depth - font * 0.4 : depth + font, fmtLen(m.x)));
+  }
+  const j = part.joint;
+  if (part.role === 'frameStile' && j) {
+    for (const r of part.joints ?? []) {
+      const [x0, x1] = [r.y0, r.y1];
+      const edge = r.edge === 'left' ? 0 : w;
+      const dir = r.edge === 'left' ? 1 : -1;
+      if (j.type === 'mortise') {
+        const shoulder = Math.min(6.35, (x1 - x0) / 4);
+        const ys = [edge, edge + dir * j.tenon].sort((a, b) => a - b);
+        out.push(s('rect', { class: 'dw-hidden', x: x0 + shoulder, y: ys[0], width: x1 - x0 - 2 * shoulder, height: ys[1] - ys[0] }));
+      } else if (j.type === 'dowel') {
+        const n = Math.max(1, j.dowels);
+        for (let k = 0; k < n; k++) out.push(s('circle', { class: 'bore-system', cx: x0 + ((x1 - x0) * (k + 1)) / (n + 1), cy: edge + dir * font * 0.6, r: (j.dowelDiameter || 9.5) / 2 }));
+      } else {
+        out.push(s('line', { class: 'dw-dim', x1: x0, y1: edge, x2: x1, y2: edge }));
+      }
+      out.push(label((x0 + x1) / 2, edge + dir * font * 2.2 + (dir > 0 ? 0 : font * 0.5), `rail ${fmtLen(x0)}–${fmtLen(x1)}`));
+    }
+  }
+  if (part.role === 'frameRail' && j) {
+    if (j.type === 'mortise' && j.tenon) {
+      for (const x of [j.tenon, l - j.tenon]) out.push(s('line', { class: 'dw-hidden', x1: x, y1: 0, x2: x, y2: w }));
+      out.push(label(j.tenon / 2, w / 2, 'tenon'), label(l - j.tenon / 2, w / 2, 'tenon'));
+    } else if (j.type === 'dowel') {
+      const n = Math.max(1, j.dowels);
+      for (const x of [0, l]) for (let k = 0; k < n; k++) out.push(s('circle', { class: 'bore-system', cx: x + (x ? -1 : 1) * font * 0.6, cy: (w * (k + 1)) / (n + 1), r: (j.dowelDiameter || 9.5) / 2 }));
+    } else {
+      // Two pocket holes at each end on the back (one on a narrow rail).
+      const ys = w < 50 ? [w / 2] : [w / 3, (2 * w) / 3];
+      for (const x of [22, l - 22]) for (const y of ys) out.push(s('ellipse', { class: 'bore-hingePlate', cx: x, cy: y, rx: 12, ry: 5 }));
+    }
+  }
+  return out;
 }
 
 function drawing(part) {
@@ -105,10 +157,10 @@ function drawing(part) {
   const opening = part.ops.find((op) => op.type === 'opening');
   const frameDims = opening
     ? [
-        s('text', { class: 'dw-text', x: l / 2, y: w / 2 - font * 0.3, 'font-size': font, 'text-anchor': 'middle' }, `Opening ${fmtMm(opening.length)} × ${fmtMm(opening.width)}`),
+        s('text', { class: 'dw-text', x: l / 2, y: w / 2 - font * 0.3, 'font-size': font, 'text-anchor': 'middle' }, `Opening ${fmtSize(opening.length, opening.width)}`),
         s('text', { class: 'dw-muted', x: l / 2, y: w / 2 + font, 'font-size': font * 0.8, 'text-anchor': 'middle' }, 'cut through'),
         s('line', { class: 'dw-dim', x1: l / 2, y1: 0, x2: l / 2, y2: opening.y }),
-        s('text', { class: 'dw-text', x: l / 2 + font * 0.4, y: opening.y / 2 + font * 0.35, 'font-size': font }, fmtMm(opening.y)),
+        s('text', { class: 'dw-text', x: l / 2 + font * 0.4, y: opening.y / 2 + font * 0.35, 'font-size': font }, fmtLen(opening.y)),
       ]
     : null;
   const shape = part.cornerRadius
@@ -129,8 +181,9 @@ function drawing(part) {
     band(e.w2, l, 0, l, w),
     bores(part).map((b) => s('circle', { class: `bore-${b.purpose}`, cx: b.x, cy: b.y, r: b.diameter / 2 })),
     cups.shapes,
+    jointShapes(part, font),
     s('line', { class: 'dw-dim', x1: 0, y1: -margin * 0.45 - padTop, x2: l, y2: -margin * 0.45 - padTop }),
-    s('text', { class: 'dw-text', x: l / 2, y: -margin * 0.55 - padTop, 'font-size': font, 'text-anchor': 'middle' }, `L ${fmtMm(l)}`),
+    s('text', { class: 'dw-text', x: l / 2, y: -margin * 0.55 - padTop, 'font-size': font, 'text-anchor': 'middle' }, `L ${fmtLen(l)}`),
     s('line', { class: 'dw-dim', x1: -margin * 0.45, y1: 0, x2: -margin * 0.45, y2: w }),
     s(
       'text',
@@ -142,7 +195,7 @@ function drawing(part) {
         'text-anchor': 'middle',
         transform: `rotate(-90 ${-margin * 0.55} ${w / 2})`,
       },
-      `W ${fmtMm(w)}`,
+      `W ${fmtLen(w)}`,
     ),
     s('text', { class: 'dw-muted', x: 0, y: w + margin * 0.55 + padBottom, 'font-size': font * 0.8 }, 'x → length · y ↓ width · L1 at top edge'),
   );
@@ -256,7 +309,7 @@ function sideDrawing(cab, side, opts) {
   shapes.push(
     s('line', { class: 'dw-dim', x1: 0, y1: dimY, x2: W, y2: dimY }),
     [0, W].map((x) => s('line', { class: 'dw-dim', x1: x, y1: dimY - tick, x2: x, y2: dimY + tick })),
-    s('text', { class: 'dw-text', x: W / 2, y: dimY - font * 0.4, 'font-size': font, 'text-anchor': 'middle' }, `W ${fmtMm(W)}`),
+    s('text', { class: 'dw-text', x: W / 2, y: dimY - font * 0.4, 'font-size': font, 'text-anchor': 'middle' }, `W ${fmtLen(W)}`),
     s('line', { class: 'dw-dim', x1: dimX, y1: 0, x2: dimX, y2: L }),
     [0, L].map((y) => s('line', { class: 'dw-dim', x1: dimX - tick, y1: y, x2: dimX + tick, y2: y })),
     s(
@@ -269,7 +322,7 @@ function sideDrawing(cab, side, opts) {
         'text-anchor': 'middle',
         transform: `rotate(-90 ${lx} ${L / 2})`,
       },
-      `L ${fmtMm(L)}`,
+      `L ${fmtLen(L)}`,
     ),
   );
 
@@ -322,7 +375,7 @@ function sideDrawing(cab, side, opts) {
           'g',
           {},
           s('rect', { class: 'dw-notch', x: xa, y: Y(op.x + op.length), width: xb - xa, height: op.length }),
-          s('text', { class: 'dw-muted', x: cx, y: cy, 'font-size': font * 0.75, 'text-anchor': 'middle' }, `${fmtMm(op.width)} × ${fmtMm(op.length)}`),
+          s('text', { class: 'dw-muted', x: cx, y: cy, 'font-size': font * 0.75, 'text-anchor': 'middle' }, fmtSize(op.width, op.length)),
         );
       }),
     joined,
@@ -342,7 +395,7 @@ function sideDrawing(cab, side, opts) {
     s(
       'text',
       { class: 'dw-muted', x: W / 2, y: titleY + font * 1.4, 'font-size': font * 0.85, 'text-anchor': 'middle' },
-      `${fmtMm(L)} × ${fmtMm(W)} × ${fmtMm(side.thickness)} · inside face · heights from bottom edge, depths from front edge`,
+      `${fmtSize(L, W)} × ${fmtMm(side.thickness)}${isImperial() ? ' mm' : ''} · inside face · hole heights from bottom edge, depths from front edge${isImperial() ? ', in mm' : ''}`,
     ),
     system.length
       ? s(
@@ -402,7 +455,7 @@ function sideOps(cab, side, opts) {
       ? h(
           'table',
           { class: 'hole-table' },
-          h('thead', {}, h('tr', {}, h('th', {}, 'Bore'), ['From bottom', 'From front', 'Ø × depth'].map((t) => h('th', { class: 'num' }, t)))),
+          h('thead', {}, h('tr', {}, h('th', {}, 'Bore'), ['From bottom', 'From front', 'Ø × depth'].map((t) => h('th', { class: 'num' }, isImperial() ? `${t} (mm)` : t)))),
           h(
             'tbody',
             {},
@@ -431,27 +484,38 @@ export function renderPartView(container) {
   }
   const notes = part.ops
     .map((op) => {
-      if (op.type === 'groove') return `Groove at y ${fmtMm(op.y)} · ${fmtMm(op.width)} wide · ${fmtMm(op.depth)} deep`;
+      if (op.type === 'groove') return `Groove at y ${fmtLen(op.y)} · ${fmtLen(op.width)} wide · ${fmtLen(op.depth)} deep`;
       if (op.type === 'pocket') {
-        return `Dado at ${fmtMm(op.x)}, ${fmtMm(op.y)} · ${fmtMm(op.length)} × ${fmtMm(op.width)} · ${fmtMm(op.depth)} deep`;
+        return `Dado at ${fmtLen(op.x)}, ${fmtLen(op.y)} · ${fmtSize(op.length, op.width)} · ${fmtLen(op.depth)} deep`;
       }
       if (op.type === 'rabbet') {
-        return `Rabbet on the back around the opening · ${fmtMm(op.lip)} wide × ${fmtMm(op.depth)} deep · ${fmtMm(op.length)} × ${fmtMm(op.width)} outside`;
+        return `Rabbet on the back around the opening · ${fmtLen(op.lip)} wide × ${fmtLen(op.depth)} deep · ${fmtSize(op.length, op.width)} outside`;
       }
       if (op.type === 'opening') {
-        return `Opening cut through at ${fmtMm(op.x)}, ${fmtMm(op.y)} · ${fmtMm(op.length)} × ${fmtMm(op.width)}`;
+        return `Opening cut through at ${fmtLen(op.x)}, ${fmtLen(op.y)} · ${fmtSize(op.length, op.width)}`;
       }
       return null;
     })
     .filter(Boolean)
     .map((t) => h('p', {}, t));
-  if (part.shaker) notes.unshift(h('p', {}, `Shaker frame · ${Math.round(part.shaker.frame * 100) / 100} mm stiles and rails · inside corners take the CNC tool's radius`));
-  if (part.cornerRadius) notes.push(h('p', {}, `Shaker center panel · corners R${fmtMm(part.cornerRadius)} to fit the rabbet`));
+  if (part.shaker) notes.unshift(h('p', {}, `Shaker frame · ${isImperial() ? fmtLen(part.shaker.frame) : `${Math.round(part.shaker.frame * 100) / 100} mm`} stiles and rails · inside corners take the CNC tool's radius`));
+  if (part.cornerRadius) notes.push(h('p', {}, `Shaker center panel · corners R${fmtLenU(part.cornerRadius)} to fit the rabbet`));
   if (part.hinge?.cupCenter != null) {
     const hg = part.hinge;
-    notes.push(h('p', {}, `Hinge cups at K ${fmtMm(hg.k)}: centres ${fmtMm(hg.cupCenter)} from the hinge edge · ${fmtMm(hg.plate)} mm plates`));
+    const plates = hg.plate == null ? (hg.frame ? 'plates on the face frame' : 'inset plates on the side') : `${fmtMm(hg.plate)} mm plates`;
+    notes.push(h('p', {}, `${hg.name}: cups at K ${fmtMm(hg.k)}, centres ${fmtMm(hg.cupCenter)} from the hinge edge · ${plates}`));
   }
-  const header = `${part.name} — ${fmtMm(part.length)} × ${fmtMm(part.width)} × ${fmtMm(part.thickness)}  ·  edges: ${edgeCode(part.edges) || 'none'}`;
+  if (part.hingeMarks?.length) {
+    notes.push(h('p', {}, `${part.hinge?.name ?? 'Butt hinges'}: ${part.hingeMarks.length} mortised on the ${part.hingeMarks[0].edge} edge, ${fmtLen(part.hingeMarks[0].length)} long, centres ${part.hingeMarks.map((m) => fmtLen(m.x)).join(', ')} from the bottom`));
+  }
+  if (part.solid) {
+    const wood = partStock(state.project.construction, part);
+    notes.unshift(h('p', {}, `Face frame · ${wood?.name ?? 'solid wood'} · ${jointLabel(part.joint)}`));
+    if (part.role === 'frameRail' && part.joint?.type === 'mortise') notes.push(h('p', {}, `Length includes a ${fmtLen(part.joint.tenon)} tenon at each end; ${fmtLen(part.length - 2 * part.joint.tenon)} between the shoulders.`));
+    if (part.role === 'frameRail' && part.joint?.type === 'pocket') notes.push(h('p', {}, 'Pocket holes on the back, at both ends.'));
+    if (part.role === 'frameStile' && part.joints?.length) notes.push(h('p', {}, `Rails meet it at ${part.joints.map((r) => `${fmtLen(r.y0)}–${fmtLen(r.y1)} (${r.edge})`).join(', ')}, from the bottom.`));
+  }
+  const header = `${part.name} — ${fmtSize(part.length, part.width)} × ${fmtMm(part.thickness)}${isImperial() ? ' mm' : ''}  ·  edges: ${edgeCode(part.edges) || 'none'}`;
   const legend = (color, label, square = false) =>
     h('span', {}, h('i', { style: { background: `var(${color})`, borderRadius: square ? '0' : null } }), label);
 
@@ -497,7 +561,7 @@ export function renderPartView(container) {
         h(
           'table',
           {},
-          h('thead', {}, h('tr', {}, h('th', {}, 'Bore'), ['x', 'y', 'Ø'].map((t) => h('th', { class: 'num' }, t)))),
+          h('thead', {}, h('tr', {}, h('th', {}, 'Bore'), ['x', 'y', 'Ø'].map((t) => h('th', { class: 'num' }, isImperial() ? `${t} (mm)` : t)))),
           h(
             'tbody',
             {},

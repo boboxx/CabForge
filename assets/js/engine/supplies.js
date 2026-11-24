@@ -6,13 +6,14 @@ import { runLabel } from './countertop.js';
 import { cutList } from './cutlist.js';
 import { fmtMm, materialById } from './model.js';
 import { paintNeeded } from './paint.js';
+import { FT_PER_M, csvLen, unitName } from './units.js';
 
 /**
  * @param cabinets built cabinets
  * @param c        job construction
  * @param sheets   optional Map of library material id → sheets needed
  * @param tops     the job's countertops (countertops(p, built))
- * @returns {{ sheets: object[], bands: object[], tops: object[], paint: object, hardware: object[], edgeBandM: number, topM: number,
+ * @returns {{ sheets: object[], woods: object[], bands: object[], tops: object[], paint: object, hardware: object[], edgeBandM: number, topM: number,
  *             materialCost: number | null, hardwareCost: number, totalCost: number | null }}
  *   `paint` is paintNeeded's result; its cost is in the material cost.
  *   Sheet, band, countertop and hardware rows carry `unitCost` (per sheet / metre / unit,
@@ -49,6 +50,8 @@ export function supplies(cabinets, c, sheets = null, tops = []) {
     const unitCost = ct?.cost || 0;
     return { name: ct?.name || 'Countertop', run: runLabel(t), length: t.length, depth: t.depth, thickness: t.thickness, m, unitCost, cost: m * unitCost };
   });
+  // Face frame wood, by board feet (cutlist.js solidCutList).
+  const woodRows = list.woods ?? [];
   const sheetCost = sheetRows.some((m) => m.cost == null) ? null : sheetRows.reduce((n, m) => n + m.cost, 0);
 
   const hardware = new Map();
@@ -62,11 +65,19 @@ export function supplies(cabinets, c, sheets = null, tops = []) {
   };
   for (const cab of cabinets) {
     for (const p of cab.parts) {
-      if (p.role === 'door' && p.hinge) {
+      if (p.role === 'door' && p.hinge?.type === 'butt') {
+        const name = p.hinge.name ?? 'Butt hinge';
+        const prof = c.styleHinges?.[p.hinge.style];
+        add(`butt|${p.hinge.style}|${name}`, 'Hinge', `${name}, mortised`, p.hinge.count, 'pcs', prof?.buttCost);
+        used(`butt|${p.hinge.style}|${name}`, cab.name);
+      } else if (p.role === 'door' && p.hinge) {
         const name = p.hinge.name ?? 'Cup hinge';
-        add(`hinge|${name}`, 'Hinge', `${name}, 35 mm cup`, p.hinge.count, 'pcs', c.hinge.cost);
+        // The inset and face-frame hinges are priced on their own.
+        const prof = p.hinge.style ? c.styleHinges?.[p.hinge.style] : null;
+        const [cost, plateCost] = prof ? [prof.cost, prof.plateCost] : [c.hinge.cost, c.hinge.plateCost];
+        add(`hinge|${name}`, 'Hinge', `${name}, 35 mm cup`, p.hinge.count, 'pcs', cost);
         const plate = p.hinge.plate == null ? '' : `, ${fmtMm(p.hinge.plate)} mm`;
-        add(`plate|${name}${plate}`, 'Hinge mounting plate', `for ${name}${plate}`, p.hinge.count, 'pcs', c.hinge.plateCost);
+        add(`plate|${name}${plate}`, 'Hinge mounting plate', `for ${name}${plate}`, p.hinge.count, 'pcs', plateCost);
         used(`hinge|${name}`, cab.name);
         used(`plate|${name}${plate}`, cab.name);
       } else if (p.role === 'drawerFront' && p.slide) {
@@ -84,9 +95,10 @@ export function supplies(cabinets, c, sheets = null, tops = []) {
   for (const r of hardware.values()) r.cost = r.qty * r.unitCost;
   const hardwareCost = [...hardware.values()].reduce((n, r) => n + r.cost, 0);
   const paint = paintNeeded(cabinets, c);
-  const materialCost = sheetCost == null ? null : sheetCost + [...bandRows, ...topRows].reduce((n, r) => n + r.cost, 0) + paint.cost;
+  const materialCost = sheetCost == null ? null : sheetCost + [...bandRows, ...topRows, ...woodRows].reduce((n, r) => n + r.cost, 0) + paint.cost;
   return {
     sheets: sheetRows,
+    woods: woodRows,
     bands: bandRows,
     tops: topRows,
     paint,
@@ -99,21 +111,31 @@ export function supplies(cabinets, c, sheets = null, tops = []) {
   };
 }
 
-export function suppliesCsv(s) {
+/** The Materials report as CSV; sizes and lengths in the display units
+ *  (`units` 'in': inches and feet), thicknesses in mm. */
+export function suppliesCsv(s, { units = unitName() } = {}) {
+  const inch = units === 'in';
+  const size = (v) => (inch ? csvLen(v, 'in') : v.toFixed(0));
+  const run = (m, digits) => (inch ? (m * FT_PER_M).toFixed(digits) : m.toFixed(digits));
+  const runUnit = inch ? 'ft' : 'm';
   const esc = (v) => (/[",\n]/.test(String(v)) ? `"${String(v).replaceAll('"', '""')}"` : String(v));
   const money = (v) => (v ? v.toFixed(2) : '');
   const lines = ['Category,Item,Specification,Quantity,Unit,Unit cost,Cost'];
   for (const m of s.sheets) {
-    const spec = `${m.thickness} mm, ${m.sheetLength.toFixed(0)} × ${m.sheetWidth.toFixed(0)}`;
+    const spec = `${m.thickness} mm, ${size(m.sheetLength)} × ${size(m.sheetWidth)}${inch ? ' in' : ''}`;
     lines.push(['Sheet goods', m.material, spec, m.sheets ?? '', 'sheets', money(m.unitCost), money(m.cost)].map(esc).join(','));
+  }
+  for (const w of s.woods ?? []) {
+    const spec = `${w.quarters}/4 rough, ${w.parts} face frame parts, ${w.waste}% waste`;
+    lines.push(['Solid wood', w.name, spec, w.boardFeet.toFixed(1), 'bd ft', money(w.unitCost), money(w.cost)].map(esc).join(','));
   }
   for (const b of s.bands) {
     const spec = `${b.type ? `${b.type}, ` : ''}${b.thickness} mm`;
-    lines.push(['Edge banding', b.name, spec, b.m.toFixed(1), 'm', money(b.unitCost), money(b.cost)].map(esc).join(','));
+    lines.push(['Edge banding', b.name, spec, run(b.m, 1), runUnit, money(b.unitCost), money(b.cost)].map(esc).join(','));
   }
   for (const t of s.tops) {
-    const spec = `${t.run}, ${fmtMm(t.length)} × ${fmtMm(t.depth)} × ${fmtMm(t.thickness)} mm`;
-    lines.push(['Countertop', t.name, spec, t.m.toFixed(2), 'm', money(t.unitCost), money(t.cost)].map(esc).join(','));
+    const spec = inch ? `${t.run}, ${size(t.length)} × ${size(t.depth)} × ${size(t.thickness)} in` : `${t.run}, ${fmtMm(t.length)} × ${fmtMm(t.depth)} × ${fmtMm(t.thickness)} mm`;
+    lines.push(['Countertop', t.name, spec, run(t.m, 2), runUnit, money(t.unitCost), money(t.cost)].map(esc).join(','));
   }
   for (const pr of s.paint?.products ?? []) {
     const spec = `${pr.coats} coat${pr.coats === 1 ? '' : 's'} over ${s.paint.areaFt2.toFixed(0)} ft², ${pr.qty.toFixed(2)} ${pr.unit} used`;

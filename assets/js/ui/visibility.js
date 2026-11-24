@@ -1,5 +1,6 @@
 // Floating "Visibility" panel in the 3D view: hide part groups, isolate the
-// selected cabinet, and bring back individually hidden parts.
+// selected cabinet, bring back individually hidden parts, and show the
+// fronts open or the job x-rayed.
 
 import { PART_GROUPS } from '../engine/part.js';
 import { h, mount } from './dom.js';
@@ -27,6 +28,17 @@ export function renderVisibility(container) {
         type: 'checkbox',
         checked: !state.hiddenGroups.has(id),
         onchange: (e) => setVisibility((s) => (e.target.checked ? s.hiddenGroups.delete(id) : s.hiddenGroups.add(id))),
+      }),
+      label,
+    );
+  const viewBox = (key, label) =>
+    h(
+      'label',
+      {},
+      h('input', {
+        type: 'checkbox',
+        checked: state[key],
+        onchange: (e) => setVisibility((s) => (s[key] = e.target.checked)),
       }),
       label,
     );
@@ -74,6 +86,10 @@ export function renderVisibility(container) {
         ),
       ),
       h('p', { class: 'muted' }, 'Hide single parts with the checkboxes in the parts table.'),
+      h('hr'),
+      h('h3', {}, 'View'),
+      viewBox('openFronts', 'Open doors & drawers'),
+      viewBox('xray', 'X-ray'),
     ),
   );
 }

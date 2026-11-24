@@ -5,6 +5,7 @@
 import { defaultConstruction, ensureBands, ensurePanelMaterial, stackFronts } from '../engine/model.js';
 import { buildAll, emptyProject } from '../engine/project.js';
 import { ensureRoom, locationById, locations } from '../engine/room.js';
+import { setUnits } from '../engine/units.js';
 import { api } from './api.js';
 
 const CURRENT_KEY = 'cabforge.currentProject';
@@ -30,6 +31,10 @@ export const state = {
   hiddenParts: new Set(),
   /** Show only the selected cabinet in 3D. */
   isolate: false,
+  /** 3D: doors swung open and drawers pulled out. */
+  openFronts: false,
+  /** 3D: see-through faces. */
+  xray: false,
   visibilityOpen: false,
   /** Cabinet dialog tab: null (closed) | 'cabinet' | 'construction'. */
   cabDialog: null,
@@ -44,6 +49,10 @@ export const state = {
   noJob: false,
   /** The shop's construction standards (library included) for new projects. */
   shop: defaultConstruction(),
+  /** Shop-wide preferences: display units ('mm' | 'in') and the inch
+   *  precision (8, 16, 32 = fractions; 0 = decimal). Saved apart from the
+   *  shop's construction standards. */
+  prefs: { units: 'mm', precision: 32 },
   saveStatus: 'saved', // 'saved' | 'saving' | 'error'
   saveError: '',
 };
@@ -129,6 +138,12 @@ function rebuild() {
 
 let saveTimer = null;
 let lastShopJson = '';
+// The open job's construction as last saved (or opened): only a change to it
+// becomes the shop standard, so moving a cabinet doesn't overwrite shop
+// defaults set on their own (e.g. US standard sizes).
+let lastConstructionJson = '';
+/** Ids of projects on the server. */
+const storedIds = new Set();
 
 function scheduleSave() {
   clearTimeout(saveTimer);
@@ -140,14 +155,20 @@ async function save() {
   saveTimer = null;
   const project = state.project;
   try {
-    await api.saveProject(project);
+    // A job is not stored until it has a cabinet. Once stored it keeps
+    // saving, so removing its last cabinet reaches the server too.
+    if (project.cabinets.length || storedIds.has(project.id)) {
+      await api.saveProject(project);
+      storedIds.add(project.id);
+    }
     // Construction edits become the shop standard for new projects.
     const shopJson = JSON.stringify(project.construction);
-    if (shopJson !== lastShopJson) {
+    if (shopJson !== lastConstructionJson && shopJson !== lastShopJson) {
       await api.saveShop(project.construction);
       lastShopJson = shopJson;
       state.shop = JSON.parse(shopJson);
     }
+    lastConstructionJson = shopJson;
     // A newer edit during the request has its own save queued.
     if (!saveTimer) state.saveStatus = 'saved';
     state.saveError = '';
@@ -224,11 +245,14 @@ function stackAllFronts(project) {
   }
 }
 
-export function openProject(project) {
+/** Pass { stored: false } for a project that is not on the server yet. */
+export function openProject(project, { stored = true } = {}) {
+  if (stored) storedIds.add(project.id);
   project.construction = upgradeConstruction(project.construction);
   ensureRoom(project);
   stackAllFronts(project);
   state.project = project;
+  lastConstructionJson = JSON.stringify(project.construction);
   state.selected = 0;
   state.at = null;
   state.selectedPart = null;
@@ -238,21 +262,19 @@ export function openProject(project) {
   notify();
 }
 
-/** Starts a job with no cabinets. Pass { save: false } to keep it off the
- *  server until it is first edited. */
-export function createProject({ save = true } = {}) {
+/** Starts a job with no cabinets. It is saved once it has one. */
+export function createProject() {
   const p = emptyProject(clone(state.shop));
   p.id = newProjectId();
-  openProject(p);
-  if (save) scheduleSave();
+  openProject(p, { stored: false });
 }
 
 /** Leaves the app with no job open: no cabinets, nothing saved. Adding a
- *  cabinet or naming the job starts a new one. */
+ *  cabinet or naming the job starts a new one, saved once it has a cabinet. */
 export function clearProject() {
   const p = emptyProject(clone(state.shop));
   Object.assign(p, { id: newProjectId(), name: '' });
-  openProject(p);
+  openProject(p, { stored: false });
   state.noJob = true;
   rememberCurrent(NO_JOB);
 }
@@ -265,8 +287,41 @@ export function cancelSave() {
   state.saveError = '';
 }
 
+/** Changes the shop preferences (display units) and saves them. */
+export async function setPrefs(patch) {
+  state.prefs = { ...state.prefs, ...patch };
+  applyPrefs();
+  notify();
+  try {
+    await api.savePrefs(state.prefs);
+  } catch (e) {
+    state.saveStatus = 'error';
+    state.saveError = e.message;
+    notify({ skipSettings: true });
+  }
+}
+
+function applyPrefs() {
+  setUnits({ system: state.prefs.units, precision: state.prefs.precision });
+}
+
+/** Replaces the shop's construction standards (used by new jobs) and saves
+ *  them; the open job is left as it is. */
+export async function setShop(construction) {
+  state.shop = construction;
+  lastShopJson = JSON.stringify(construction);
+  await api.saveShop(construction);
+}
+
 /** Loads the shop standards and the last opened project from the server. */
 export async function boot() {
+  try {
+    const prefs = await api.getPrefs();
+    if (prefs) state.prefs = { ...state.prefs, ...prefs };
+  } catch {
+    // keep mm: the shop load below reports a server that can't be reached
+  }
+  applyPrefs();
   try {
     const shop = await api.getShop();
     if (shop) {

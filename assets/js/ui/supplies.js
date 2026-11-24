@@ -8,6 +8,7 @@ import { supplies, suppliesCsv } from '../engine/supplies.js';
 import { download, h, mount } from './dom.js';
 import { sheetsNeeded } from './nesting.js';
 import { state } from './store.js';
+import { fmtArea, fmtLenU, fmtRun, fmtSize } from '../engine/units.js';
 
 const table = (head, rows, numeric) =>
   h(
@@ -36,7 +37,7 @@ export function renderSupplies(container) {
   const paint = s.paint;
   const painting = paint.areaM2 > 0;
   const gallons = paint.products.reduce((n, pr) => n + pr.buy, 0);
-  const unpriced = [...s.sheets, ...s.bands, ...s.tops, ...(painting ? paint.products : []), ...s.hardware.filter((r) => r.item !== 'Shelf pins')].filter((r) => !r.unitCost).length;
+  const unpriced = [...s.sheets, ...s.woods, ...s.bands, ...s.tops, ...(painting ? paint.products : []), ...s.hardware.filter((r) => r.item !== 'Shelf pins')].filter((r) => !r.unitCost).length;
   const exportCsv = () => download(`${state.project.name || 'Job'} materials.csv`, 'text/csv', suppliesCsv(s));
 
   mount(
@@ -54,8 +55,8 @@ export function renderSupplies(container) {
       'div',
       { class: 'totals' },
       h('div', {}, h('b', {}, totalSheets ?? '…'), 'Sheets'),
-      h('div', {}, h('b', {}, `${s.edgeBandM.toFixed(1)} m`), 'Edge banding'),
-      s.tops.length ? h('div', {}, h('b', {}, `${s.topM.toFixed(2)} m`), 'Countertop') : null,
+      h('div', {}, h('b', {}, fmtRun(s.edgeBandM)), 'Edge banding'),
+      s.tops.length ? h('div', {}, h('b', {}, fmtRun(s.topM, 2)), 'Countertop') : null,
       painting ? h('div', {}, h('b', {}, `${gallons} ${paint.products[0]?.unit ?? 'gal'}`), 'Paint') : null,
       h('div', {}, h('b', {}, hinges), 'Hinges'),
       h('div', {}, h('b', {}, pairs), 'Pairs of slides'),
@@ -68,7 +69,7 @@ export function renderSupplies(container) {
           'p',
           { class: 'muted' },
           `${unpriced} item${unpriced === 1 ? ' has' : 's have'} no price and ${unpriced === 1 ? 'is' : 'are'} left out of the cost. ` +
-            'Set prices in Settings: Sheet materials, Edge banding, Paint, Countertop, Hinges and Drawers.',
+            'Set prices in Settings: Sheet materials, Solid wood, Edge banding, Paint, Countertop, Hinges and Drawers.',
         )
       : null,
     h('h3', {}, 'Sheet goods'),
@@ -81,9 +82,9 @@ export function renderSupplies(container) {
               {},
               h('td', {}, m.material),
               h('td', { class: 'num' }, `${fmtMm(m.thickness)} mm`),
-              h('td', { class: 'num' }, `${fmtMm(m.sheetLength)} × ${fmtMm(m.sheetWidth)}`),
+              h('td', { class: 'num' }, fmtSize(m.sheetLength, m.sheetWidth)),
               h('td', { class: 'num' }, m.parts),
-              h('td', { class: 'num' }, `${m.areaM2.toFixed(2)} m²`),
+              h('td', { class: 'num' }, fmtArea(m.areaM2)),
               h('td', { class: 'num qty' }, m.sheets ?? '…'),
               h('td', { class: 'num' }, m.unitCost ? fmtMoney(m.unitCost) : '—'),
               h('td', { class: 'num qty' }, money(m.unitCost, m.cost)),
@@ -92,6 +93,25 @@ export function renderSupplies(container) {
           [1, 2, 3, 4, 5, 6, 7],
         )
       : h('p', { class: 'muted' }, 'No parts yet.'),
+    s.woods.length ? h('h3', {}, 'Solid wood (face frames)') : null,
+    s.woods.length
+      ? table(
+          ['Wood', 'Rough', 'Parts', 'Board feet', '$ / bd ft', 'Cost'],
+          s.woods.map((w) =>
+            h(
+              'tr',
+              {},
+              h('td', {}, w.name),
+              h('td', { class: 'num' }, `${w.quarters}/4`),
+              h('td', { class: 'num' }, w.parts),
+              h('td', { class: 'num qty', title: `Including ${w.waste}% waste` }, w.boardFeet.toFixed(1)),
+              h('td', { class: 'num' }, w.unitCost ? fmtMoney(w.unitCost) : '—'),
+              h('td', { class: 'num qty' }, w.unitCost ? fmtMoney(w.cost) : '—'),
+            ),
+          ),
+          [1, 2, 3, 4, 5],
+        )
+      : null,
     h('h3', {}, 'Edge banding'),
     s.bands.length
       ? table(
@@ -103,7 +123,7 @@ export function renderSupplies(container) {
               h('td', {}, b.color ? h('i', { class: 'swatch band-swatch', style: { background: b.color } }) : null, b.name),
               h('td', {}, b.type),
               h('td', { class: 'num' }, `${fmtMm(b.thickness)} mm`),
-              h('td', { class: 'num qty' }, `${b.m.toFixed(1)} m`),
+              h('td', { class: 'num qty' }, fmtRun(b.m)),
               h('td', { class: 'num' }, b.unitCost ? fmtMoney(b.unitCost) : '—'),
               h('td', { class: 'num qty' }, money(b.unitCost, b.cost)),
             ),
@@ -121,9 +141,9 @@ export function renderSupplies(container) {
               {},
               h('td', {}, t.name),
               h('td', { class: 'muted-cell' }, t.run),
-              h('td', { class: 'num qty' }, `${fmtMm(t.length)} mm`),
-              h('td', { class: 'num' }, `${fmtMm(t.depth)} mm`),
-              h('td', { class: 'num' }, `${fmtMm(t.thickness)} mm`),
+              h('td', { class: 'num qty' }, fmtLenU(t.length)),
+              h('td', { class: 'num' }, fmtLenU(t.depth)),
+              h('td', { class: 'num' }, fmtLenU(t.thickness)),
               h('td', { class: 'num' }, t.unitCost ? fmtMoney(t.unitCost) : '—'),
               h('td', { class: 'num qty' }, money(t.unitCost, t.cost)),
             ),
@@ -201,6 +221,7 @@ export function renderSupplies(container) {
       'p',
       { class: 'muted supply-note' },
       'Sheet counts follow the Nesting plan (kerf, trim and mode from its settings). Edge banding is the exact banded edge length, with no trimming allowance. ' +
+        'Solid wood is board feet of rough stock for the face frames, with the waste allowance (Settings → Solid wood). ' +
         'Countertops are one continuous length per run of base cabinets, end overhangs included, with no joints or cut-outs. ' +
         'Paint is the painted area (the faces and edges set in Settings: Paint) × coats ÷ coverage, bought in whole containers. ' +
         'Material cost is whole sheets × price per sheet plus banding length × price per metre, countertop length × price per metre and paint containers × price; hardware is quantity × unit price.',

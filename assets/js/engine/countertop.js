@@ -10,10 +10,11 @@
 // back-to-back island, which has one top over both rows) and by its end
 // overhang at both ends.
 
-import { fmtMm, thickness } from './model.js';
+import { fmtMm, frontProjection } from './model.js';
 import { isPlinth } from './part.js';
 import { atOf, standOff } from './project.js';
 import { locations, placement } from './room.js';
+import { fmtLen, fmtSize, isImperial } from './units.js';
 
 const TOUCH = 0.5;
 // Cabinets this close in height share a top, which sits on the highest.
@@ -25,7 +26,7 @@ const inBaseRun = (spec) =>
 
 /** A cabinet's footprint along its location: x0/x1 and the depth to its front face from the wall. */
 function footprint(p, spec, parts) {
-  const faces = spec.depth + thickness(p.construction, 'front');
+  const faces = spec.depth + frontProjection(p.construction);
   // A corner cabinet: its leg along this wall, standing off both walls; the
   // top runs on into the corner.
   if (spec.corner) {
@@ -88,7 +89,7 @@ export function countertops(p, built) {
     p.cabinets.forEach((spec, i) => {
       if (!spec.corner || !inBaseRun(spec) || !built[i]?.cabinet || atOf(p, spec) !== prev.id) return;
       const off = standOff(p, spec);
-      const front = off + spec.depth + thickness(p.construction, 'front');
+      const front = off + spec.depth + frontProjection(p.construction);
       spansAt.get(loc.id).push({ name: spec.name, x0: front + ct.frontOverhang, x1: off + spec.corner.return, top: spec.elevation + spec.height, front });
     });
   });
@@ -126,5 +127,5 @@ export function runLabel(top) {
 
 /** "2400 × 650 × 30 mm" */
 export function topSize(top) {
-  return `${fmtMm(top.length)} × ${fmtMm(top.depth)} × ${fmtMm(top.thickness)} mm`;
+  return isImperial() ? `${fmtSize(top.length, top.depth)} × ${fmtLen(top.thickness)}` : `${fmtMm(top.length)} × ${fmtMm(top.depth)} × ${fmtMm(top.thickness)} mm`;
 }

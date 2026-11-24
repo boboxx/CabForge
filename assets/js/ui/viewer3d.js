@@ -3,8 +3,8 @@
 
 import { applianceSketch } from '../engine/appliance.js';
 import { countertops } from '../engine/countertop.js';
-import { effectiveConstruction, partMaterial, thickness } from '../engine/model.js';
-import { isPlinth, partGroup } from '../engine/part.js';
+import { effectiveConstruction, frontProjection, partStock } from '../engine/model.js';
+import { isDrawerBox, isFrontPanel, isPlinth, partGroup } from '../engine/part.js';
 import { cabinetPlacement, placedParts } from '../engine/project.js';
 import { DEFAULT_WALL_COLOR, locations, placement } from '../engine/room.js';
 import { solidcraftJson } from '../engine/solidcraft.js';
@@ -29,13 +29,15 @@ precision highp float;
 in vec3 v_normal;
 in vec3 v_color;
 uniform float u_lit;
+uniform float u_alpha;
 out vec4 o_color;
 void main() {
   if (u_lit < 0.5) { o_color = vec4(v_color, 1.0); return; }
   vec3 n = normalize(v_normal);
   float key = max(dot(n, normalize(vec3(0.45, 0.8, 0.6))), 0.0);
   float fill = max(dot(n, normalize(vec3(-0.6, 0.2, 0.4))), 0.0);
-  o_color = vec4(v_color * (0.55 + 0.4 * key + 0.12 * fill), 1.0);
+  // Premultiplied, like the canvas.
+  o_color = vec4(v_color * (0.55 + 0.4 * key + 0.12 * fill) * u_alpha, u_alpha);
 }`;
 
 const FLOATS_PER_VERTEX = 9;
@@ -44,6 +46,11 @@ const EDGE = [0.22, 0.24, 0.28];
 // The selected cabinet: its parts tinted toward this, its edges drawn in it.
 const HIGHLIGHT = [0.23, 0.51, 0.96];
 const WALL_THICKNESS = 100;
+// X-ray: how opaque the faces are; every edge shows through them.
+const XRAY_ALPHA = 0.18;
+// Open fronts: how far doors swing, and how much of its length a drawer comes out.
+const DOOR_OPEN = Math.PI / 2;
+const DRAWER_OUT = 0.8;
 // Appliance sketches: stainless, darker trim, black glass and cooktop, handles.
 const APPLIANCE_TONES = { steel: [0.8, 0.81, 0.83], trim: [0.62, 0.64, 0.67], black: [0.1, 0.1, 0.11], handle: [0.5, 0.51, 0.54] };
 const tint = (c, k = 0.4) => c.map((v, i) => v * (1 - k) + HIGHLIGHT[i] * k);
@@ -121,7 +128,7 @@ function hexRgb(hex) {
 
 /** Material colour, shaded per role so same-material panels stay distinct. */
 function partColor(c, part) {
-  const base = hexRgb(partMaterial(c, part)?.color);
+  const base = hexRgb(partStock(c, part)?.color);
   const k = isPlinth(part.role) && part.material !== 'front' ? 0.55 : part.role === 'back' || part.role === 'drawerBottom' ? 0.88 : 1;
   return base.map((v) => v * k);
 }
@@ -384,6 +391,63 @@ function pushMapped(faces, edges, map, draw, edgeColor = null) {
   }
 }
 
+// ---- open fronts -------------------------------------------------------------
+
+/** A turn by `angle` about the vertical line through (hx, hz). */
+function swing(hx, hz, angle) {
+  const [c, s] = [Math.cos(angle), Math.sin(angle)];
+  const dir = ([x, y, z]) => [x * c - z * s, y, x * s + z * c];
+  return {
+    point: ([x, y, z]) => {
+      const [dx, , dz] = dir([x - hx, 0, z - hz]);
+      return [hx + dx, y, hz + dz];
+    },
+    dir,
+  };
+}
+
+/** A move of `dz` toward the front. */
+const slide = (dz) => ({ point: ([x, y, z]) => [x, y, z + dz], dir: (v) => v });
+
+const within = (inner, outer) =>
+  [0, 1].every((a) => inner.min[a] >= outer.min[a] - 1e-6 && inner.min[a] + inner.size[a] <= outer.min[a] + outer.size[a] + 1e-6);
+
+/**
+ * The parts of a built cabinet that move when its fronts are open, as part
+ * index → move in part space: doors turn about their hinge edge on the
+ * front face, drawers (front and box) slide out, and a shaker panel goes
+ * with its front.
+ */
+function openMoves(parts) {
+  const moves = new Map();
+  const fronts = [];
+  parts.forEach((p, i) => {
+    const { min, size } = p.bbox;
+    let move = null;
+    if (p.role === 'door' && p.hinge?.side) {
+      const left = p.hinge.side === 'left';
+      move = swing(left ? min[0] : min[0] + size[0], min[2] + size[2], left ? DOOR_OPEN : -DOOR_OPEN);
+    } else if (p.role === 'drawerFront') {
+      // The drawer box's parts follow its front.
+      let k = i + 1;
+      const box = [];
+      while (parts[k] && isDrawerBox(parts[k].role)) box.push(k++);
+      const side = box.map((j) => parts[j]).find((q) => q.role === 'drawerSide');
+      move = slide((side?.bbox.size[2] ?? 300) * DRAWER_OUT);
+      for (const j of box) moves.set(j, move);
+    }
+    if (!move) return;
+    moves.set(i, move);
+    fronts.push([p, move]);
+  });
+  parts.forEach((p, i) => {
+    if (!isFrontPanel(p.role)) return;
+    const front = fronts.find(([q]) => q.frame === p.frame && within(p.bbox, q.bbox));
+    if (front) moves.set(i, front[1]);
+  });
+  return moves;
+}
+
 // ---- renderer ---------------------------------------------------------------
 
 function compile(gl, type, src) {
@@ -455,6 +519,7 @@ export class Viewer3D {
     this.program = program;
     this.uMvp = gl.getUniformLocation(program, 'u_mvp');
     this.uLit = gl.getUniformLocation(program, 'u_lit');
+    this.uAlpha = gl.getUniformLocation(program, 'u_alpha');
     this.faces = makeMesh(gl);
     this.edges = makeMesh(gl);
 
@@ -526,6 +591,7 @@ export class Viewer3D {
     const faces = [];
     const edges = [];
     let bounds = null;
+    const moves = state.openFronts ? built.map((b) => (b.cabinet ? openMoves(b.cabinet.parts) : null)) : [];
     for (const pp of placedParts(project, built)) {
       if (isolate && pp.cabinet !== selected) continue;
       if (hiddenGroups.has(partGroup(pp.part.role))) continue;
@@ -536,10 +602,12 @@ export class Viewer3D {
       const base = partColor(project.construction, pp.part);
       const color = isSelected ? SELECTED : inSelected ? tint(base) : base;
       const { bbox, cuts, plan } = pp.part;
+      const move = moves[pp.cabinet]?.get(pp.index);
+      const map = move ? { point: (q) => pp.map.point(move.point(q)), dir: (v) => pp.map.dir(move.dir(v)) } : pp.map;
       pushMapped(
         faces,
         edges,
-        pp.map,
+        map,
         (f, e) => (plan ? pushPrism(f, e, plan, bbox.min[1], bbox.min[1] + bbox.size[1], color) : pushPart(f, e, bbox.min, bbox.size, cuts, color)),
         inSelected ? HIGHLIGHT : null,
       );
@@ -556,7 +624,7 @@ export class Viewer3D {
       const map = cabinetPlacement(project, spec);
       const color = i === selected ? HIGHLIGHT : EDGE;
       const c = effectiveConstruction(project.construction, spec.overrides);
-      const sketch = hiddenGroups.has('appliances') ? [] : applianceSketch(spec, { ft: thickness(c, 'front'), top: ct?.enabled === false ? 0 : (ct?.thickness ?? 0) });
+      const sketch = hiddenGroups.has('appliances') ? [] : applianceSketch(spec, { ft: frontProjection(c), top: ct?.enabled === false ? 0 : (ct?.thickness ?? 0) });
       for (const b of sketch) {
         const tone = APPLIANCE_TONES[b.tone];
         pushMapped(faces, edges, map, (f, e) => pushBox(f, e, b.min, b.size, i === selected ? tint(tone) : tone), i === selected ? HIGHLIGHT : null);
@@ -623,9 +691,18 @@ export class Viewer3D {
     gl.enable(gl.POLYGON_OFFSET_FILL);
     gl.polygonOffset(1, 1);
     gl.uniform1f(this.uLit, 1);
+    // X-ray: see-through faces that hide nothing, so every edge is drawn.
+    gl.uniform1f(this.uAlpha, state.xray ? XRAY_ALPHA : 1);
+    if (state.xray) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+    }
     gl.bindVertexArray(this.faces.vao);
     gl.drawArrays(gl.TRIANGLES, 0, this.faces.count);
     gl.disable(gl.POLYGON_OFFSET_FILL);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
 
     gl.uniform1f(this.uLit, 0);
     gl.bindVertexArray(this.edges.vao);

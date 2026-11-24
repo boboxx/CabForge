@@ -1,11 +1,12 @@
 // Parts table for the selected cabinet and the whole-job cut list.
 
 import { cutListCsv } from '../engine/cutlist.js';
-import { fmtMm, partMaterial } from '../engine/model.js';
+import { fmtMm, partStock } from '../engine/model.js';
 import { PART_GROUPS, edgeCode, partGroup } from '../engine/part.js';
 import { projectCutList } from '../engine/project.js';
 import { download, h, mount } from './dom.js';
 import { partKey, setState, setVisibility, state } from './store.js';
+import { fmtArea, fmtLen, fmtRun, isImperial } from '../engine/units.js';
 
 export function renderPartsTable(container) {
   const entry = state.built[state.selected];
@@ -44,8 +45,9 @@ export function renderPartsTable(container) {
         }),
       ),
       h('td', {}, p.name),
-      [p.length, p.width, p.thickness].map((v) => h('td', { class: 'num' }, fmtMm(v))),
-      h('td', {}, partMaterial(c, p)?.name ?? ''),
+      [p.length, p.width].map((v) => h('td', { class: 'num' }, fmtLen(v))),
+      h('td', { class: 'num' }, fmtMm(p.thickness)),
+      h('td', {}, partStock(c, p)?.name ?? ''),
       h('td', {}, edgeCode(p.edges)),
       h('td', { class: 'num' }, p.ops.length),
     );
@@ -63,7 +65,7 @@ export function renderPartsTable(container) {
           {},
           h('th', { class: 'eye', title: 'Show in 3D' }, '👁'),
           h('th', {}, `Parts — ${cab.name}`),
-          ['Length', 'Width', 'Thick'].map((t) => h('th', { class: 'num' }, t)),
+          ['Length', 'Width', isImperial() ? 'Thick (mm)' : 'Thick'].map((t) => h('th', { class: 'num' }, t)),
           h('th', {}, 'Material'),
           h('th', {}, 'Edges'),
           h('th', { class: 'num' }, 'Ops'),
@@ -84,7 +86,7 @@ export function renderCutList(container) {
       'div',
       { class: 'totals' },
       list.materials.map((m) =>
-        h('div', {}, h('b', {}, `${m.areaM2.toFixed(2)} m²`), `${m.material} ${fmtMm(m.thickness)} mm · ${m.parts} parts`),
+        h('div', {}, h('b', {}, fmtArea(m.areaM2)), `${m.material} ${fmtMm(m.thickness)} mm · ${m.parts} parts`),
       ),
     ),
     h('h3', {}, 'Edge banding for the job'),
@@ -95,14 +97,14 @@ export function renderCutList(container) {
         h(
           'div',
           {},
-          h('b', {}, `${b.m.toFixed(1)} m`),
+          h('b', {}, fmtRun(b.m)),
           b.color ? h('i', { class: 'swatch band-swatch', style: { background: b.color } }) : null,
           `${b.name} ${fmtMm(b.thickness)} mm`,
           b.type ? h('span', { class: 'muted' }, ` · ${b.type}`) : null,
         ),
       ),
-      list.bands.length > 1 ? h('div', { class: 'grand' }, h('b', {}, `${list.edgeBandM.toFixed(1)} m`), 'Total edge banding') : null,
-      list.bands.length ? null : h('div', {}, h('b', {}, '0 m'), 'No banded edges'),
+      list.bands.length > 1 ? h('div', { class: 'grand' }, h('b', {}, fmtRun(list.edgeBandM)), 'Total edge banding') : null,
+      list.bands.length ? null : h('div', {}, h('b', {}, fmtRun(0, 0)), 'No banded edges'),
     ),
     h(
       'table',
@@ -132,7 +134,7 @@ export function renderCutList(container) {
             h('td', { class: 'num' }, r.qty),
             h('td', {}, r.name),
             h('td', {}, `${r.material} ${fmtMm(r.thickness)}`),
-            [r.length, r.width, r.cutLength, r.cutWidth].map((v) => h('td', { class: 'num' }, fmtMm(v))),
+            [r.length, r.width, r.cutLength, r.cutWidth].map((v) => h('td', { class: 'num' }, fmtLen(v))),
             h('td', {}, r.edges),
             h('td', {}, r.band),
             h('td', {}, r.cabinets.join(', ')),
@@ -140,5 +142,54 @@ export function renderCutList(container) {
         ),
       ),
     ),
+    list.solid.length ? solidTable(list) : null,
   );
+}
+
+/** Face frame stiles and rails: solid wood, cut to size (not nested). */
+function solidTable(list) {
+  return [
+    h('h3', {}, 'Face frames (solid wood)'),
+    h(
+      'div',
+      { class: 'totals' },
+      list.woods.map((w) => h('div', {}, h('b', {}, `${w.boardFeet.toFixed(1)} bd ft`), `${w.name} · ${w.parts} parts, ${w.quarters}/4 with ${w.waste}% waste`)),
+    ),
+    h(
+      'table',
+      {},
+      h(
+        'thead',
+        {},
+        h(
+          'tr',
+          {},
+          h('th', { class: 'num' }, 'Qty'),
+          h('th', {}, 'Part'),
+          h('th', {}, 'Wood'),
+          ['Length', 'Width', isImperial() ? 'Thick (mm)' : 'Thick'].map((t) => h('th', { class: 'num' }, t)),
+          h('th', {}, 'Joinery'),
+          h('th', {}, 'Cabinets'),
+        ),
+      ),
+      h(
+        'tbody',
+        {},
+        list.solid.map((r) =>
+          h(
+            'tr',
+            {},
+            h('td', { class: 'num' }, r.qty),
+            h('td', {}, r.name),
+            h('td', {}, r.wood),
+            [r.length, r.width].map((v) => h('td', { class: 'num' }, fmtLen(v))),
+            h('td', { class: 'num' }, fmtMm(r.thickness)),
+            h('td', {}, r.joinery),
+            h('td', {}, r.cabinets.join(', ')),
+          ),
+        ),
+      ),
+    ),
+    h('p', { class: 'muted' }, 'Rail lengths include any tenons. Stiles run the full height of the frame; rails go between them.'),
+  ];
 }

@@ -388,6 +388,8 @@ table.paint-table button { padding: 2px 8px; }
 .paint-part-row select { flex: 0 1 180px; }
 .paint-edges { display: inline-flex; align-items: center; gap: 4px; }
 table.size-table td.num input { width: 90px; }
+/* Inch fields hold feet and fractions (6' 8 23/32"). */
+table.library td.num input.len { width: 112px; }
 table.size-table td.used { white-space: nowrap; }
 table.drawer-size-table { width: 100%; max-width: 440px; table-layout: fixed; }
 table.drawer-size-table th, table.drawer-size-table td { padding: 3px 4px; }
@@ -453,6 +455,7 @@ table.band-table label.check { display: inline-flex; align-items: center; gap: 5
 }
 .visibility-panel label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .visibility-panel hr { width: 100%; border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+.visibility-panel h3 { margin: 0; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .visibility-panel .muted { margin: 4px 0 0; font-size: 11px; }
 th.eye, td.eye { width: 28px; padding-right: 0; text-align: center; }
 tbody tr.dim td:not(.eye) { opacity: 0.45; }
@@ -479,14 +482,25 @@ tbody tr.dim td:not(.eye) { opacity: 0.45; }
   .view { overflow: visible; background: none; }
   .view > .pane:not(.nesting) { display: none; }
   .view > .pane.nesting { position: static; overflow: visible; }
-  .sheet { break-inside: avoid; }
-  .sheet-grid { grid-template-columns: 1fr 1fr; }
+  /* One sheet per page, its parts list under it. Each material starts a
+     new page too, its heading kept with its first sheet. */
+  .sheet-grid { display: block; }
+  .sheet { border: 0; background: none; padding: 0; }
+  .sheet + .sheet, .nest-group ~ .nest-group { break-before: page; }
+  .nest-group h2 { margin-top: 0; break-after: avoid; }
+  .sheet svg { max-height: 60vh; break-after: avoid; }
+  .sheet figcaption { color: inherit; font-size: 13px; break-after: avoid; }
 }
 
 /* Nesting optimizer */
 .nest-toolbar .field:has(select) { width: 220px; }
 .nest-status { color: var(--muted); }
 .nest-status.busy { color: var(--accent); }
+.nest-hidden-note { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--accent-soft); font-size: 13px; }
+
+@media print {
+  .nest-hidden-note button { display: none; }
+}
 
 .cnc-pick { margin: 6px 0; border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; background: var(--panel-2); }
 .cnc-pick summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
@@ -503,15 +517,16 @@ tbody tr.dim td:not(.eye) { opacity: 0.45; }
 .cnc-save { float: right; margin-top: -4px; }
 .nest-group.stale { opacity: 0.55; transition: opacity 0.2s; }
 .sheet-list { margin-top: 6px; }
-.sheet-list summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+details.sheet-list summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 .sheet-list table { margin-top: 4px; font-size: 12px; }
 .sheet-list td, .sheet-list th { padding: 2px 6px; }
+/* Shown only in print, where each sheet is on its own page. */
+.sheet-material { display: none; }
 
 @media print {
-  .sheet-list { display: block; }
-  .sheet-list summary { display: none; }
-  .sheet-list > table { display: table; }
   .nest-toolbar { display: none; }
+  .sheet-material { display: inline; }
+  .sheet-list thead { display: table-header-group; }
 }
 
 /* Cabinet list reordering */
@@ -611,7 +626,18 @@ tbody tr.dim td:not(.eye) { opacity: 0.45; }
 .supply-table td.muted-cell { color: var(--muted); white-space: normal; }
 .supply-note { margin-top: 14px; font-size: 12px; }
 
+/* Face frames view */
+.frame-card { margin: 0 0 22px; }
+.frame-card h3 { margin: 6px 0 2px; }
+.frame-drawing { width: 100%; max-height: 60vh; display: block; }
+
 @media print {
+  body.print-frames .topbar, body.print-frames .sidebar, body.print-frames .tabs, body.print-frames .bottom, body.print-frames .supply-actions { display: none !important; }
+  body.print-frames .app, body.print-frames .workspace { display: block; height: auto; }
+  body.print-frames .view { overflow: visible; background: none; }
+  body.print-frames .view > .pane.nesting { display: none !important; }
+  body.print-frames .view > .pane.frames { display: block !important; position: static; overflow: visible; }
+  body.print-frames .frame-card { break-inside: avoid; }
   body.print-supplies .view > .pane.nesting { display: none !important; }
   body.print-supplies .view > .pane.supplies { display: block !important; position: static; overflow: visible; }
   body.print-supplies .supply-actions { display: none; }

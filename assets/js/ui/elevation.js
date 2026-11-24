@@ -1,12 +1,13 @@
 // Front elevation of one wall or island (the current one, picked above the
 // drawing), drawn from the built parts.
 
-import { effectiveConstruction, fmtMm, material, partMaterial, toeHeight } from '../engine/model.js';
-import { bores, isFront } from '../engine/part.js';
+import { effectiveConstruction, material, partStock, toeHeight } from '../engine/model.js';
+import { bores, isFramePart, isFront } from '../engine/part.js';
 import { atOf, cabinetPlacement, jobFor, partMap, standOff } from '../engine/project.js';
 import { locationById, locations, toLocation } from '../engine/room.js';
 import { h, mount, s } from './dom.js';
 import { currentAt, setState, state, toggleSelect } from './store.js';
+import { fmtLen } from '../engine/units.js';
 
 export function renderElevation(container) {
   const { project, built, selected } = state;
@@ -37,7 +38,7 @@ export function renderElevation(container) {
       const box = s('rect', { class: i === selected ? 'el-space selected' : 'el-space', x: x0, y: y(caseY1), width: w, height: spec.height });
       const mid = y(spec.elevation + spec.height / 2);
       const text = (t, dy) => s('text', { class: 'dw-muted', x: x0 + w / 2, y: mid + dy, 'font-size': font * 0.7, 'text-anchor': 'middle' }, t);
-      return s('g', { class: 'cab-hit', onclick: () => toggleSelect(i) }, box, text(spec.name, 0), text(fmtMm(w), font * 0.9));
+      return s('g', { class: 'cab-hit', onclick: () => toggleSelect(i) }, box, text(spec.name, 0), text(fmtLen(w), font * 0.9));
     }
     if (toe > 0) shapes.push(s('rect', { class: 'dw-groove', x: x0, y: y(spec.elevation + toe), width: w, height: toe }));
     shapes.push(
@@ -54,7 +55,7 @@ export function renderElevation(container) {
     const cab = built[i]?.cabinet;
     // Fillers: the strip itself, drawn in its material over the case outline.
     for (const p of cab && !state.hiddenGroups.has('fillers') ? cab.parts.filter((p) => p.role === 'filler') : []) {
-      const fill = partMaterial(job, p)?.color;
+      const fill = partStock(job, p)?.color;
       const fy = spec.elevation + p.bbox.min[1];
       shapes.push(
         s('rect', { class: 'dw-front', style: fill ? { fill } : null, x: x0, y: y(fy + p.bbox.size[1]), width: p.bbox.size[0], height: p.bbox.size[1] }),
@@ -62,11 +63,17 @@ export function renderElevation(container) {
     }
     // End panels, drawn beside the case down to the bottom of the floor scribe.
     for (const p of cab && !state.hiddenGroups.has('endPanels') ? cab.parts.filter((p) => p.role === 'endPanel') : []) {
-      const fill = partMaterial(job, p)?.color;
+      const fill = partStock(job, p)?.color;
       const [py0, ph] = [spec.elevation + p.bbox.min[1], p.bbox.size[1]];
       shapes.push(
         s('rect', { class: 'dw-front', style: fill ? { fill } : null, x: x0 + p.bbox.min[0], y: y(py0 + ph), width: p.bbox.size[0], height: ph }),
       );
+    }
+    // Face frame stiles and rails (a stile can reach over a filler or scribe).
+    for (const p of cab && !state.hiddenGroups.has('faceFrames') ? cab.parts.filter((p) => isFramePart(p.role)) : []) {
+      const fill = partStock(job, p)?.color;
+      const [py0, ph] = [spec.elevation + p.bbox.min[1], p.bbox.size[1]];
+      shapes.push(s('rect', { class: 'dw-front', style: fill ? { fill } : null, x: x0 + p.bbox.min[0], y: y(py0 + ph), width: p.bbox.size[0], height: ph }));
     }
     if (cab && showFronts) {
       // Turned fronts (a corner's return or diagonal door) are drawn with the corners below.
@@ -74,7 +81,7 @@ export function renderElevation(container) {
         const fx = x0 + p.bbox.min[0];
         const fy = spec.elevation + p.bbox.min[1];
         const [fw, fh] = [p.bbox.size[0], p.bbox.size[1]];
-        const frontFill = partMaterial(job, p)?.color;
+        const frontFill = partStock(job, p)?.color;
         shapes.push(
           s('rect', { class: 'dw-front', style: frontFill ? { fill: frontFill } : null, x: fx, y: y(fy + fh), width: fw, height: fh }),
         );
@@ -84,7 +91,7 @@ export function renderElevation(container) {
         if (p.role === 'door') {
           // Swing lines meet at the hinge side.
           const cup = bores(p).find((b) => b.purpose === 'hingeCup');
-          const hingeLeft = !cup || cup.y < p.width / 2;
+          const hingeLeft = p.hingeMarks ? p.hingeMarks[0]?.edge !== 'right' : !cup || cup.y < p.width / 2;
           const [hx, ox] = hingeLeft ? [fx, fx + fw] : [fx + fw, fx];
           shapes.push(s('path', { class: 'dw-swing', d: `M${ox},${y(fy + fh)} L${hx},${y(fy + fh / 2)} L${ox},${y(fy)}` }));
         } else {
@@ -100,7 +107,7 @@ export function renderElevation(container) {
       'g',
       { class: 'cab-hit', onclick: () => toggleSelect(i) },
       shapes,
-      s('text', { class: 'dw-text', x: x0 + w / 2, y: labelY, 'font-size': font * 0.8, 'text-anchor': 'middle' }, spec.kind === 'filler' ? fmtMm(w) : `${spec.name}  ·  ${fmtMm(w)}`),
+      s('text', { class: 'dw-text', x: x0 + w / 2, y: labelY, 'font-size': font * 0.8, 'text-anchor': 'middle' }, spec.kind === 'filler' ? fmtLen(w) : `${spec.name}  ·  ${fmtLen(w)}`),
     );
   });
 
@@ -131,7 +138,7 @@ export function renderElevation(container) {
       const pts = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => toLocation(loc, map.point([0, 1, 2].map((a) => b.min[a] + ((k >> a) & 1 ? b.size[a] : 0)))));
       const [s0, s1] = [Math.min(...pts.map((q) => q.s)), Math.max(...pts.map((q) => q.s))];
       const [fy0, fy1] = [Math.min(...pts.map((q) => q.y)), Math.max(...pts.map((q) => q.y))];
-      const fill = partMaterial(job, p)?.color;
+      const fill = partStock(job, p)?.color;
       shapes.push(s('rect', { class: 'dw-front', style: fill ? { fill } : null, x: s0, y: y(fy1), width: s1 - s0, height: fy1 - fy0 }));
     }
     return shapes.length ? [s('g', { class: 'cab-hit', onclick: () => toggleSelect(i) }, shapes)] : [];

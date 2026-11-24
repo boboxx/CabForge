@@ -2,16 +2,23 @@
 // material, with a numbered layout plan for each sheet. The optimizer runs
 // in a Web Worker so editing never stalls.
 
-import { fmtMm, materialLabel } from '../engine/model.js';
+import { materialLabel } from '../engine/model.js';
 import { nestGroup, nestGroups } from '../engine/nest.js';
-import { checkboxField, h, mount, numField, s, selectField } from './dom.js';
-import { setState, state, updateProject } from './store.js';
+import { partGroup } from '../engine/part.js';
+import { checkboxField, h, lenField, mount, s, selectField } from './dom.js';
+import { partKey, setState, setVisibility, state, updateProject } from './store.js';
+import { fmtLen, fmtSize } from '../engine/units.js';
 
 let worker = null;
 let requestId = 0;
-// The latest finished result and what it was computed for.
-let result = { key: null, groups: [], error: '' };
-let pendingKey = null;
+// Two plans: 'all' nests every part (the Materials report buys sheets from
+// it); 'shown' leaves out the parts hidden in the parts list or the
+// Visibility menu (the Nesting view). With nothing hidden they are the same
+// plan. Each keeps its latest finished result and what it was computed for.
+const newPlan = () => ({ key: null, groups: [], error: '', pendingKey: null, requestId: 0, left: 0 });
+const plans = { all: newPlan(), shown: newPlan() };
+/** Worker request id -> plan name. */
+const inflight = new Map();
 
 function getWorker() {
   if (worker === null) {
@@ -20,9 +27,10 @@ function getWorker() {
       const version = new URL(import.meta.url).search;
       worker = new Worker(new URL(`../engine/nest.worker.js${version}`, import.meta.url), { type: 'module' });
       worker.onmessage = (e) => {
-        if (e.data.id !== requestId) return; // superseded by a newer request
-        result = { key: pendingKey, groups: e.data.result ?? [], error: e.data.error ?? '' };
-        pendingKey = null;
+        const plan = plans[inflight.get(e.data.id)];
+        inflight.delete(e.data.id);
+        if (!plan || e.data.id !== plan.requestId) return; // superseded by a newer request
+        Object.assign(plan, { key: plan.pendingKey, groups: e.data.result ?? [], error: e.data.error ?? '', pendingKey: null });
         setState({});
       };
       worker.onerror = () => {
@@ -35,30 +43,61 @@ function getWorker() {
   return worker || null;
 }
 
-/** Starts nesting when the job or the nesting settings changed. */
-function ensureNested() {
-  const nesting = state.project.construction.nesting;
-  const key = `${state.version}`;
-  if (result.key === key || pendingKey === key) return;
-  const cabinets = state.built.filter((b) => b.cabinet).map((b) => b.cabinet);
-  const groups = nestGroups(cabinets, state.project.construction);
-  pendingKey = key;
-  const w = getWorker();
-  if (w) {
-    w.postMessage({ id: ++requestId, groups, nesting });
-  } else {
-    // No worker support: compute here with the quick settings.
-    result = { key, groups: groups.map((g) => nestGroup(g, { ...nesting, effort: 'quick' })), error: '' };
-    pendingKey = null;
-  }
+/** What is hidden, as text: '' when nothing is. */
+function hiddenKey() {
+  if (!state.hiddenGroups.size && !state.hiddenParts.size) return '';
+  return `${[...state.hiddenGroups].sort()}|${[...state.hiddenParts].sort()}`;
 }
 
-/** Sheets needed per library material id once the current job is nested,
- *  or null while the plan is being worked out. Starts nesting if needed. */
+/** The built cabinets, without the hidden parts when `shownOnly`.
+ *  Returns them and how many parts were left out. */
+function jobCabinets(shownOnly) {
+  const cabinets = [];
+  let left = 0;
+  state.built.forEach((b, i) => {
+    if (!b.cabinet) return;
+    if (!shownOnly) return cabinets.push(b.cabinet);
+    const spec = state.project.cabinets[i];
+    const parts = b.cabinet.parts.filter((p, j) => !state.hiddenGroups.has(partGroup(p.role)) && !state.hiddenParts.has(partKey(spec, j)));
+    left += b.cabinet.parts.length - parts.length;
+    cabinets.push({ ...b.cabinet, parts });
+  });
+  return { cabinets, left };
+}
+
+/** The plan for `name` ('all' or 'shown'); 'shown' is 'all' when nothing
+ *  is hidden. Starts nesting when the job, the nesting settings or (for
+ *  'shown') what is hidden changed. */
+function ensureNested(name) {
+  const hidden = name === 'shown' ? hiddenKey() : '';
+  if (!hidden) name = 'all';
+  const plan = plans[name];
+  const key = `${state.version}|${hidden}`;
+  if (plan.key === key || plan.pendingKey === key) return plan;
+  const nesting = state.project.construction.nesting;
+  const { cabinets, left } = jobCabinets(name === 'shown');
+  const groups = nestGroups(cabinets, state.project.construction);
+  plan.pendingKey = key;
+  plan.left = left;
+  const w = getWorker();
+  if (w) {
+    plan.requestId = ++requestId;
+    inflight.set(requestId, name);
+    w.postMessage({ id: requestId, groups, nesting });
+  } else {
+    // No worker support: compute here with the quick settings.
+    Object.assign(plan, { key, groups: groups.map((g) => nestGroup(g, { ...nesting, effort: 'quick' })), error: '', pendingKey: null });
+  }
+  return plan;
+}
+
+/** Sheets needed per library material id once the whole job is nested
+ *  (hidden parts included: they still have to be cut), or null while the
+ *  plan is being worked out. Starts nesting if needed. */
 export function sheetsNeeded() {
-  ensureNested();
-  if (result.key !== `${state.version}`) return null;
-  return new Map(result.groups.map((g) => [g.material.id, g.sheets.length]));
+  const plan = ensureNested('all');
+  if (plan.key !== `${state.version}|`) return null;
+  return new Map(plan.groups.map((g) => [g.material.id, g.sheets.length]));
 }
 
 /** Lightens a #rrggbb colour toward white so labels stay readable. */
@@ -76,7 +115,7 @@ function sheetSvg(group, sheet, index) {
   const [L, W] = [m.sheetLength, m.sheetWidth];
   const fill = tint(m.color);
   const parts = sheet.parts.map((p) => {
-    const dims = `${fmtMm(p.length)} × ${fmtMm(p.width)}`;
+    const dims = `${fmtSize(p.length, p.width)}`;
     const cx = p.x + p.sizeX / 2;
     const cy = p.y + p.sizeY / 2;
     // Number always; name and size when the part is big enough to read.
@@ -112,14 +151,15 @@ function sheetSvg(group, sheet, index) {
     h(
       'figcaption',
       {},
+      // Printed one sheet per page: say which material it is on every page.
+      h('strong', { class: 'sheet-material' }, `${materialLabel(m)} · `),
       h('strong', {}, `Sheet ${index + 1} of ${group.sheets.length}`),
       ` · ${sheet.parts.length} parts · ${Math.round(sheet.used * 100)}% used`,
-      off.length > 0 && off.width > 0 ? ` · largest offcut ${fmtMm(off.length)} × ${fmtMm(off.width)}` : '',
+      off.length > 0 && off.width > 0 ? ` · largest offcut ${fmtSize(off.length, off.width)}` : '',
     ),
     h(
-      'details',
+      'div',
       { class: 'sheet-list' },
-      h('summary', {}, 'Layout plan'),
       h(
         'table',
         {},
@@ -138,8 +178,8 @@ function sheetSvg(group, sheet, index) {
               h('td', { class: 'num' }, p.number),
               h('td', {}, p.name),
               h('td', {}, p.cabinet),
-              h('td', { class: 'num' }, `${fmtMm(p.length)} × ${fmtMm(p.width)}`),
-              h('td', { class: 'num' }, `${fmtMm(p.x)}, ${fmtMm(p.y)}`),
+              h('td', { class: 'num' }, `${fmtSize(p.length, p.width)}`),
+              h('td', { class: 'num' }, `${fmtLen(p.x)}, ${fmtLen(p.y)}`),
               h('td', {}, p.rotated ? '↻ rotated' : ''),
             ),
           ),
@@ -150,12 +190,16 @@ function sheetSvg(group, sheet, index) {
 }
 
 export function renderNesting(container) {
-  ensureNested();
+  const plan = ensureNested('shown');
+  // While the first layout without the hidden parts is worked out, show the
+  // full one (greyed out as stale) rather than nothing.
+  const result = plan.key === null && plan !== plans.all ? plans.all : plan;
   const c = state.project.construction;
   const n = c.nesting;
   const editNesting = (key, parse = (v) => Math.max(0, v)) => (v) =>
     updateProject((p) => (p.construction.nesting[key] = parse(v)));
-  const busy = pendingKey !== null;
+  const busy = plan.pendingKey !== null;
+  const left = hiddenKey() ? plan.left : 0;
   const groups = result.groups;
   const totalSheets = groups.reduce((t, g) => t + g.sheets.length, 0);
 
@@ -185,8 +229,8 @@ export function renderNesting(container) {
         n.effort,
         editNesting('effort', String),
       ),
-      numField('Saw kerf / bit Ø', 'kerf', n.kerf, editNesting('kerf'), { step: 0.5 }),
-      numField('Edge trim', 'trim', n.trim, editNesting('trim'), { step: 1 }),
+      lenField('Saw kerf / bit Ø', 'kerf', n.kerf, editNesting('kerf'), { step: 0.5 }),
+      lenField('Edge trim', 'trim', n.trim, editNesting('trim'), { step: 1 }),
       checkboxField('Group identical parts', 'nestGroup', n.group, editNesting('group', Boolean)),
       h('div', { class: 'spacer' }),
       h(
@@ -197,6 +241,24 @@ export function renderNesting(container) {
       h('button', { onclick: () => window.print(), disabled: busy }, 'Print'),
     ),
     result.error ? h('div', { class: 'error' }, `Nesting failed: ${result.error}`) : null,
+    left > 0
+      ? h(
+          'div',
+          { class: 'nest-hidden-note' },
+          `${left} hidden part${left === 1 ? ' is' : 's are'} left out of this layout. The Materials report still counts sheets for every part. `,
+          h(
+            'button',
+            {
+              onclick: () =>
+                setVisibility((s) => {
+                  s.hiddenGroups.clear();
+                  s.hiddenParts.clear();
+                }),
+            },
+            'Show all parts',
+          ),
+        )
+      : null,
     groups.map((g) =>
       h(
         'section',
@@ -223,7 +285,7 @@ export function renderNesting(container) {
           h(
             'span',
             { class: 'muted' },
-            ` · sheet ${fmtMm(g.material.sheetLength)} × ${fmtMm(g.material.sheetWidth)}` +
+            ` · sheet ${fmtSize(g.material.sheetLength, g.material.sheetWidth)}` +
               `${g.material.grain ? ' · grain along length' : ''}` +
               ` · ${g.sheets.length} sheet${g.sheets.length === 1 ? '' : 's'} · ${g.partCount} parts · ${Math.round(g.yield * 100)}% used`,
           ),
@@ -233,7 +295,7 @@ export function renderNesting(container) {
               'div',
               { class: 'error' },
               `${g.unplaced.length} part${g.unplaced.length > 1 ? 's do' : ' does'} not fit on a sheet: `,
-              g.unplaced.map((p) => `${p.name} (${p.cabinet}) ${fmtMm(p.length)} × ${fmtMm(p.width)}`).join('; '),
+              g.unplaced.map((p) => `${p.name} (${p.cabinet}) ${fmtSize(p.length, p.width)}`).join('; '),
             )
           : null,
         h(

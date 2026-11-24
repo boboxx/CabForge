@@ -3,12 +3,13 @@
 // construction. New cabinets go to the current wall or island.
 
 import { newCorner } from '../engine/corner.js';
-import { DEFAULT_FILLER_WIDTH, SPACE_PRESETS, fmtMm, newCabinet, newFiller, newPanel, newSpace, runOf } from '../engine/model.js';
+import { DEFAULT_FILLER_WIDTH, SPACE_PRESETS, fmtMm, isFaceFrame, newBlindCorner, newCabinet, newFiller, newPanel, newSpace, runOf } from '../engine/model.js';
 import { addCabinet, atOf, insertCabinet, moveCabinet, relayout } from '../engine/project.js';
 import { addWall, locations } from '../engine/room.js';
 import { RUN_LABELS, countOverrides } from './cabinetdialog.js';
 import { gearIcon, h, mount } from './dom.js';
 import { currentAt, select, setState, state, toggleSelect, updateProject } from './store.js';
+import { fmtLen, isImperial } from '../engine/units.js';
 
 // New cabinets take their sizes from the job construction.
 const job = () => state.project.construction;
@@ -108,12 +109,12 @@ function cabinetRow(c, i) {
       'span',
       { class: 'dims' },
       c.panel
-        ? `${fmtMm(c.width)} · panel`
+        ? `${fmtLen(c.width)} · panel`
         : c.kind === 'filler'
-        ? `${fmtMm(c.width)} · ${RUN_LABELS[c.run].toLowerCase()}`
+        ? `${fmtLen(c.width)} · ${RUN_LABELS[c.run].toLowerCase()}`
         : c.kind === 'space'
-          ? `${fmtMm(c.width)} · space`
-          : `${fmtMm(c.width)}×${fmtMm(c.height)}×${fmtMm(c.depth)}`,
+          ? `${fmtLen(c.width)} · space`
+          : isImperial() ? `${fmtLen(c.width)} × ${fmtLen(c.height)} × ${fmtLen(c.depth)}` : `${fmtMm(c.width)}×${fmtMm(c.height)}×${fmtMm(c.depth)}`,
     ),
     h(
       'button',
@@ -211,8 +212,15 @@ function cabinetList() {
       h('button', { onclick: () => add(newCabinet('base', 0, job())) }, '+ Base'),
       h('button', { onclick: () => add(newCabinet('wall', 0, job())) }, '+ Wall'),
       h('button', { onclick: () => add(newCabinet('tall', 0, job())) }, '+ Tall'),
-      h('button', { onclick: () => add(newCorner('base', 0, job())), title: 'L-shaped corner base for the end of a wall: two doors' }, '+ Corner base'),
-      h('button', { onclick: () => add(newCorner('wall', 0, job())), title: 'Corner wall cabinet for the end of a wall: one 45° door' }, '+ Corner wall'),
+      // Face-frame jobs get blind corners; the L and 45° corners are frameless.
+      isFaceFrame(job())
+        ? null
+        : [
+            h('button', { onclick: () => add(newCorner('base', 0, job())), title: 'L-shaped corner base for the end of a wall: two doors' }, '+ Corner base'),
+            h('button', { onclick: () => add(newCorner('wall', 0, job())), title: 'Corner wall cabinet for the end of a wall: one 45° door' }, '+ Corner wall'),
+          ],
+      h('button', { onclick: () => add(newBlindCorner('base', 0, job())), title: "Blind corner base for the end of a wall: the next wall's cabinets stand in front of its blind end" }, '+ Blind base'),
+      h('button', { onclick: () => add(newBlindCorner('wall', 0, job())), title: "Blind corner wall cabinet for the end of a wall: the next wall's cabinets stand in front of its blind end" }, '+ Blind wall'),
       otherMenu(addOther),
     ),
     h('h3', {}, 'Cabinets'),
@@ -232,7 +240,7 @@ function cabinetList() {
             onclick: () => setState({ at: loc.id }),
           },
           loc.name,
-          h('span', { class: 'dims' }, loc.kind === 'wall' ? fmtMm(loc.length) : `${fmtMm(loc.length)} island`),
+          h('span', { class: 'dims' }, loc.kind === 'wall' ? fmtLen(loc.length) : `${fmtLen(loc.length)} island`),
         ),
         rows.length ? h('ul', { class: 'cab-list' }, rows.map(([c, i]) => cabinetRow(c, i))) : h('p', { class: 'muted hint-small loc-empty' }, 'No cabinets yet.'),
       ];
